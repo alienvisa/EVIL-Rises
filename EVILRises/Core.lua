@@ -1,9 +1,9 @@
 local addonName, addon = ...
 
+addon.folder = addonName
 addon.title = "EVIL Rises"
 addon.guildName = "EVIL: Every Villian Is Lemons"
 addon.version = C_AddOns.GetAddOnMetadata(addonName, "Version")
-addon.iconTexture = C_AddOns.GetAddOnMetadata(addonName, "IconTexture")
 
 local function printMessage(message)
     print("|cffd9e85b" .. addon.title .. "|r " .. message)
@@ -23,12 +23,16 @@ events:SetScript("OnEvent", function(self, event, loadedAddon)
         if type(EVILRisesDB.showLoginMessage) ~= "boolean" then
             EVILRisesDB.showLoginMessage = false
         end
+        if type(EVILRisesDB.guildWindow) ~= "boolean" then
+            EVILRisesDB.guildWindow = true
+        end
         addon.settings = EVILRisesDB
 
         self:UnregisterEvent("ADDON_LOADED")
         self:RegisterEvent("PLAYER_LOGIN")
     elseif event == "PLAYER_LOGIN" then
         self:UnregisterEvent("PLAYER_LOGIN")
+        addon.InstallGuildWindow()
         if addon.settings.showLoginMessage then
             printMessage("v" .. addon.version .. " loaded. Type /evil to open the guild panel.")
         end
@@ -43,7 +47,9 @@ SlashCmdList.EVILRISES = function(message)
         addon.TogglePanel()
     elseif command == "version" then
         printMessage("v" .. addon.version)
+    elseif command == "blizzard" then
+        addon.OpenBlizzardGuildWindow()
     else
-        printMessage("/evil opens the guild panel. /evil version shows the installed version. /evil help shows this message.")
+        printMessage("/evil opens EVIL Rises. /evil blizzard opens the original guild window. /evil version shows the installed version.")
     end
 end
