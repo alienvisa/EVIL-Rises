@@ -23,9 +23,6 @@ events:SetScript("OnEvent", function(self, event, loadedAddon)
         if type(EVILRisesDB.showLoginMessage) ~= "boolean" then
             EVILRisesDB.showLoginMessage = false
         end
-        if type(EVILRisesDB.guildWindow) ~= "boolean" then
-            EVILRisesDB.guildWindow = true
-        end
         addon.settings = EVILRisesDB
 
         self:UnregisterEvent("ADDON_LOADED")
@@ -47,9 +44,7 @@ SlashCmdList.EVILRISES = function(message)
         addon.TogglePanel()
     elseif command == "version" then
         printMessage("v" .. addon.version)
-    elseif command == "blizzard" then
-        addon.OpenBlizzardGuildWindow()
     else
-        printMessage("/evil opens EVIL Rises. /evil blizzard opens the original guild window. /evil version shows the installed version.")
+        printMessage("/evil opens EVIL Rises. /evil version shows the installed version.")
     end
 end

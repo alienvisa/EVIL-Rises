@@ -2,13 +2,14 @@
 ## Title: EVIL Rises
 ## Notes: The guild addon for EVIL: Every Villian Is Lemons.
 ## Author: EVIL
-## Version: 0.2.0
+## Version: 0.2.1
 ## SavedVariables: EVILRisesDB
 ## IconTexture: Interface\Icons\INV_Misc_Food_22
 ## AllowLoadGameType: camelot
 
 Core.lua
 Panel.lua
+GuildWindow.lua
 RosterData.lua
 MemberTooltip.lua
 Roster.lua

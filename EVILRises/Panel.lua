@@ -3,8 +3,6 @@ local _, addon = ...
 local tabNames = { "Roster", "Raids", "Loot", "Professions", "Guild", "Alliances", "Recruitment", "Leadership", "Settings" }
 local tabWidths = { Roster = 69, Raids = 58, Loot = 49, Professions = 94, Guild = 55, Alliances = 76, Recruitment = 103, Leadership = 92, Settings = 72 }
 local panel
-local bindingOwner
-local hookedButtons = {}
 
 local function loadTabOrder(saved)
     local order, seen = {}, {}
@@ -34,77 +32,7 @@ function addon.SetWindowBackdrop(frame)
     frame:SetBackdropBorderColor(0.80, 0.76, 0.56, 1)
 end
 
-local function nativeWindow()
-    if CommunitiesFrame and CommunitiesFrame:IsShown() then
-        return CommunitiesFrame
-    end
-    if GuildFrame and GuildFrame:IsShown() then
-        return GuildFrame
-    end
-end
-
-function addon.OpenBlizzardGuildWindow()
-    if panel then
-        panel:Hide()
-    end
-    local toggle = ToggleCommunitiesFrame or ToggleGuildFrame
-    if toggle and not nativeWindow() then
-        toggle()
-    end
-end
-
-local function updateBindings()
-    if not bindingOwner or InCombatLockdown() then
-        return
-    end
-    ClearOverrideBindings(bindingOwner)
-    if addon.settings.guildWindow and IsInGuild() then
-        for _, action in ipairs({ "TOGGLEGUILDTAB", "TOGGLECOMMUNITIES" }) do
-            for _, key in ipairs({ GetBindingKey(action) }) do
-                SetOverrideBindingClick(bindingOwner, false, key, bindingOwner:GetName(), "LeftButton")
-            end
-        end
-    end
-end
-
-local function hookMicroButtons()
-    for _, name in ipairs({ "GuildMicroButton", "CommunitiesMicroButton" }) do
-        local button = _G[name]
-        if button and not hookedButtons[button] then
-            hookedButtons[button] = true
-            button:HookScript("OnClick", function(_, mouseButton)
-                if mouseButton ~= "LeftButton" or not addon.settings.guildWindow or not IsInGuild() or InCombatLockdown() then
-                    return
-                end
-                C_Timer.After(0, function()
-                    if not InCombatLockdown() and addon.settings.guildWindow and IsInGuild() then
-                        addon.TogglePanel()
-                    end
-                end)
-            end)
-        end
-    end
-end
-
-function addon.InstallGuildWindow()
-    bindingOwner = CreateFrame("Button", "EVILRisesGuildBinding", UIParent)
-    bindingOwner:SetScript("OnClick", function() addon.TogglePanel() end)
-    bindingOwner:RegisterEvent("ADDON_LOADED")
-    bindingOwner:RegisterEvent("UPDATE_BINDINGS")
-    bindingOwner:RegisterEvent("PLAYER_GUILD_UPDATE")
-    bindingOwner:RegisterEvent("PLAYER_REGEN_ENABLED")
-    bindingOwner:SetScript("OnEvent", function(_, event)
-        if event == "ADDON_LOADED" then
-            hookMicroButtons()
-        else
-            updateBindings()
-        end
-    end)
-    hookMicroButtons()
-    updateBindings()
-end
-
-local function settingsCheck(page, label, key, top, onChange)
+local function settingsCheck(page, label, key, top)
     local check = CreateFrame("CheckButton", nil, page, "UICheckButtonTemplate")
     check:SetPoint("TOPLEFT", 16, top)
     local text = page:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -113,9 +41,6 @@ local function settingsCheck(page, label, key, top, onChange)
     check:SetChecked(addon.settings[key])
     check:SetScript("OnClick", function(self)
         addon.settings[key] = not not self:GetChecked()
-        if onChange then
-            onChange()
-        end
     end)
 end
 
@@ -204,11 +129,10 @@ local function createPanel()
             if name == "Roster" then
                 addon.CreateRoster(page)
             elseif name == "Settings" then
-                settingsCheck(page, "Use EVIL Rises for the guild key and micro-menu button", "guildWindow", -8, updateBindings)
-                settingsCheck(page, "Show a message on login", "showLoginMessage", -44)
+                settingsCheck(page, "Show a message on login", "showLoginMessage", -8)
                 local reset = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
                 reset:SetSize(140, 24)
-                reset:SetPoint("TOPLEFT", 19, -88)
+                reset:SetPoint("TOPLEFT", 19, -52)
                 reset:SetText("Reset tab order")
                 reset:SetScript("OnClick", function()
                     order = loadTabOrder()
@@ -294,16 +218,17 @@ local function createPanel()
     return frame
 end
 
-function addon.TogglePanel()
-    local native = nativeWindow()
-    if native and not InCombatLockdown() then
-        HideUIPanel(native)
-    end
+function addon.ShowPanel()
     if not panel then
         panel = createPanel()
-    elseif panel:IsShown() then
-        panel:Hide()
-        return
     end
     panel:Show()
+end
+
+function addon.TogglePanel()
+    if panel and panel:IsShown() then
+        panel:Hide()
+    else
+        addon.ShowPanel()
+    end
 end
