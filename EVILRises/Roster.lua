@@ -1,6 +1,8 @@
 local _, addon = ...
+local colors = addon.colors
 
 local rowHeight = 23
+local gutter = 7
 local blank = "-"
 local columns = {
     { "online", "", 27, "Online status" },
@@ -29,12 +31,19 @@ local function smallIcon(parent, size, offset)
 end
 
 function addon.CreateRoster(page)
-    local searchLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    searchLabel:SetPoint("TOPLEFT", 8, -11)
+    local toolbar = CreateFrame("Frame", nil, page, "BackdropTemplate")
+    toolbar:SetPoint("TOPLEFT", gutter, -6)
+    toolbar:SetPoint("TOPRIGHT", -gutter, -6)
+    toolbar:SetHeight(27)
+    addon.SetSurface(toolbar, colors.control, colors.trim)
+    addon.AddSurfaceSheen(toolbar, 0.90, 0.67, 0.35, 0.11)
+    local searchLabel = toolbar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    searchLabel:SetPoint("LEFT", 8, 0)
     searchLabel:SetText("Search roster")
-    local search = CreateFrame("EditBox", nil, page, "InputBoxTemplate")
-    search:SetPoint("LEFT", searchLabel, "RIGHT", 12, 0)
-    search:SetSize(196, 24)
+    searchLabel:SetTextColor(unpack(colors.gold))
+    local search = CreateFrame("EditBox", nil, toolbar, "InputBoxTemplate")
+    search:SetPoint("LEFT", searchLabel, "RIGHT", 10, 0)
+    search:SetSize(196, 22)
     search:SetAutoFocus(false)
     search:SetMaxLetters(80)
     search:SetScript("OnEscapePressed", function(self)
@@ -42,29 +51,44 @@ function addon.CreateRoster(page)
         self:ClearFocus()
     end)
 
-    local summary = page:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    summary:SetPoint("TOPRIGHT", -10, -11)
+    local summary = toolbar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    summary:SetPoint("RIGHT", -8, 0)
     local empty = page:CreateFontString(nil, "OVERLAY", "GameFontDisable")
     empty:SetPoint("TOP", 0, -88)
 
     local scroll = CreateFrame("ScrollFrame", nil, page, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 5, -63)
-    scroll:SetPoint("BOTTOMRIGHT", -27, 4)
+    scroll:SetPoint("TOPLEFT", gutter, -60)
+    scroll:SetPoint("BOTTOMRIGHT", -29, 6)
     local child = CreateFrame("Frame", nil, scroll)
-    child:SetSize(998, 1)
+    child:SetSize(1, 1)
     scroll:SetScrollChild(child)
 
     local detail = addon.CreateMemberTooltip(page)
     local rows, headers, visible = {}, {}, {}
+    local widths, offsets = {}, {}
     local roster
     local sortKey, descending = "name", false
 
     local classSheet = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
     local statusBase = "Interface\\AddOns\\" .. addon.folder .. "\\Textures\\"
 
+    local function layoutRow(row)
+        row:SetWidth(child:GetWidth())
+        row.nameButton:ClearAllPoints()
+        row.nameButton:SetPoint("LEFT", offsets[4], 0)
+        row.nameButton:SetWidth(widths[4] - 3)
+        fillWidth(row.texts[4], widths[4] - 9)
+        for index = 5, #columns do
+            local text = row.texts[index]
+            text:ClearAllPoints()
+            text:SetPoint("LEFT", offsets[index] + 4, 0)
+            fillWidth(text, widths[index] - 8)
+        end
+    end
+
     local function createRow()
         local row = CreateFrame("Frame", nil, child)
-        row:SetSize(998, rowHeight)
+        row:SetHeight(rowHeight)
         row.texts = {}
         row.background = row:CreateTexture(nil, "BACKGROUND")
         row.background:SetAllPoints()
@@ -73,34 +97,26 @@ function addon.CreateRoster(page)
         row.class:SetTexture(classSheet)
         row.crown = smallIcon(row, 16, 61)
         row.crown:SetTexture("Interface\\GroupFrame\\UI-Group-LeaderIcon")
-        local offset = 0
-        for index, entry in ipairs(columns) do
-            local width = entry[3]
-            if index == 4 then
-                local button = CreateFrame("Button", nil, row)
-                button:SetPoint("LEFT", offset, 0)
-                button:SetSize(width - 3, rowHeight)
-                button:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
-                local name = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                name:SetPoint("LEFT", 3, 0)
-                fillWidth(name, width - 9)
-                row.texts[index] = name
-                button:SetScript("OnClick", function()
-                    search:ClearFocus()
-                    detail:Open(roster, row.member)
-                end)
-            elseif index > 4 then
-                local text = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-                text:SetPoint("LEFT", offset + 4, 0)
-                fillWidth(text, width - 8)
-                row.texts[index] = text
-            end
-            offset = offset + width
+        local button = CreateFrame("Button", nil, row)
+        row.nameButton = button
+        button:SetHeight(rowHeight)
+        button:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+        local name = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        name:SetPoint("LEFT", 3, 0)
+        row.texts[4] = name
+        button:SetScript("OnClick", function()
+            search:ClearFocus()
+            detail:Open(roster, row.member)
+        end)
+        for index = 5, #columns do
+            row.texts[index] = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
         end
+        layoutRow(row)
         return row
     end
 
     local function drawRows()
+        if not widths[4] then return end
         local top = math.floor(scroll:GetVerticalScroll() / rowHeight)
         local count = math.ceil(scroll:GetHeight() / rowHeight) + 1
         for slot = 1, count do
@@ -111,7 +127,7 @@ function addon.CreateRoster(page)
                 if not row then row = createRow(); rows[slot] = row end
                 row.member = member
                 row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -(index - 1) * rowHeight)
-                row.background:SetColorTexture(0.23, 0.28, 0.12, index % 2 == 0 and 0.27 or 0.10)
+                row.background:SetColorTexture(unpack(index % 2 == 0 and colors.alternateRow or colors.row))
                 row.status:SetTexture(statusBase .. (member.online and "Online" or "Offline"))
                 local coords = CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[member.classFile]
                 if coords then row.class:SetTexCoord(unpack(coords)) end
@@ -166,24 +182,24 @@ function addon.CreateRoster(page)
         empty:SetShown(#visible == 0)
         for _, entry in ipairs(columns) do
             local header = headers[entry[1]]
-            header.arrow:SetShown(entry[1] == sortKey)
+            local selected = entry[1] == sortKey
+            addon.SetRosterHeaderSelected(header, selected)
+            header.arrow:SetShown(selected)
             header.arrow:SetRotation(descending and math.pi or 0)
         end
         drawRows()
         detail:Refresh(roster)
     end
 
-    local offset = 5
     for _, entry in ipairs(columns) do
-        local key, label, width, tooltip = unpack(entry)
-        local header = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
-        header:SetPoint("TOPLEFT", offset, -37)
-        header:SetSize(width - 1, 23)
-        header:SetText(label)
+        local key, label, _, tooltip = unpack(entry)
+        local header = addon.CreateRosterHeader(page, label)
+        header:SetHeight(22)
         header.arrow = header:CreateTexture(nil, "OVERLAY")
         header.arrow:SetPoint("RIGHT", -5, 0)
         header.arrow:SetTexture("Interface\\Buttons\\UI-ScrollBar-ScrollUpButton-Up")
-        header.arrow:SetSize(11, 11)
+        header.arrow:SetTexCoord(0.30, 0.70, 0.28, 0.68)
+        header.arrow:SetSize(8, 8)
         if key == "online" then
             smallIcon(header, 12, 3):SetTexture(statusBase .. "Online")
         elseif key == "classFile" then
@@ -207,8 +223,47 @@ function addon.CreateRoster(page)
             render(true)
         end)
         headers[key] = header
-        offset = offset + width
     end
+
+    local function layoutColumns()
+        local width = math.floor(scroll:GetWidth())
+        local fixed, flexible = 0, 0
+        for index, entry in ipairs(columns) do
+            if index <= 3 or index == 5 then
+                fixed = fixed + entry[3]
+            else
+                flexible = flexible + entry[3]
+            end
+        end
+        if width <= fixed then return end
+        child:SetWidth(width)
+        local available = width - fixed
+        local offset = 0
+        for index, entry in ipairs(columns) do
+            local size = entry[3]
+            if index == #columns then
+                size = width - offset
+            elseif index > 3 and index ~= 5 then
+                size = math.floor(size * available / flexible)
+            end
+            widths[index], offsets[index] = size, offset
+            local header = headers[entry[1]]
+            header:ClearAllPoints()
+            header:SetPoint("TOPLEFT", gutter + offset, -35)
+            header:SetWidth(size - 1)
+            offset = offset + size
+        end
+        for _, row in ipairs(rows) do layoutRow(row) end
+    end
+
+    scroll:HookScript("OnSizeChanged", function()
+        layoutColumns()
+        if roster then
+            local maxScroll = math.max(0, child:GetHeight() - scroll:GetHeight())
+            scroll:SetVerticalScroll(math.min(scroll:GetVerticalScroll(), maxScroll))
+            drawRows()
+        end
+    end)
 
     local refreshPending
     local function refresh()
@@ -231,6 +286,7 @@ function addon.CreateRoster(page)
         end)
     end)
     page:SetScript("OnShow", function()
+        layoutColumns()
         addon.RequestRoster()
         refresh()
     end)

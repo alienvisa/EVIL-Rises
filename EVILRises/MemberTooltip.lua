@@ -48,6 +48,7 @@ function addon.CreateMemberTooltip(parent)
     name:SetPoint("TOPLEFT", 17, -13)
     name:SetPoint("RIGHT", -38, 0)
     name:SetJustifyH("LEFT")
+    name:SetTextColor(unpack(addon.colors.green))
 
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", -3, -3)

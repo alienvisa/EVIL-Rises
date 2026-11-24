@@ -2,12 +2,15 @@
 
 A World of Warcraft: Forever addon for **EVIL: Every Villian Is Lemons**.
 
+The [EVIL Rises theme guide](THEME.md) records the approved Classic styling for future updates.
+
 ## Install and try it
 
 1. Copy the `EVILRises` folder into `World of Warcraft/_forever_/Interface/AddOns/`.
 2. Start Forever and enable **EVIL Rises** in the AddOns list.
 3. Open EVIL Rises with your guild keybind, the guild micro-menu button, `/evil`, or `/evilrises`. While the addon is enabled, it replaces the guild view for guild members.
 4. Drag the tabs to reorder them. The guild name stays at the left. **Settings** can restore the default order.
+   Drag the window's bottom-right corner to resize it. The padlock beside the close button locks resizing. The window remembers both its size and lock state.
 5. Click a roster header to sort and click it again to reverse the order. The icon headers sort by status, class, and guild rank. A gold crown marks the guild master and a silver crown marks the second rank or a rank named Officer.
 6. Click a member's name for notes, profession details, and linked characters. Enter another roster name or `Name-Realm` to link that character as an alt. The order, login setting, and alt links are saved on the account. Alt links are scoped to the guild.
 
