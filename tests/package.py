@@ -1,5 +1,6 @@
 """Exercise the real BigWigs build in a temporary checkout."""
 
+from contextlib import chdir
 from pathlib import Path
 import shutil
 import subprocess
@@ -7,7 +8,7 @@ import tempfile
 import unittest
 from zipfile import ZipFile
 
-from scripts.package_release import build_archive
+from scripts.release import build_at_tag
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,14 +29,20 @@ class PackageTests(unittest.TestCase):
                      "commit", "-qm", "fix: package fixture")
             self.git(root, "tag", "v0.4.5")
 
+            (root / "EVILRises/Future.lua").write_text("-- A later commit\n", encoding="utf-8")
+            self.git(root, "add", ".")
+            self.git(root, "-c", "user.name=Package test", "-c", "user.email=test@example.invalid",
+                     "commit", "-qm", "feat: later commit")
             toc = root / "EVILRises/EVILRises.toc"
             original = toc.read_bytes()
-            package = build_archive(root, "v0.4.5", root / ".release")
+            with chdir(root):
+                package = build_at_tag("v0.4.5", root / ".release")
             self.assertEqual(package.archive.name, "EVILRises-v0.4.5.zip")
             self.assertEqual(package.interface, 16001)
             self.assertEqual(toc.read_bytes(), original)
             with ZipFile(package.archive) as archive:
                 self.assertIn(b"## Version: 0.4.5", archive.read("EVILRises/EVILRises.toc"))
+                self.assertNotIn("EVILRises/Future.lua", archive.namelist())
                 for name in archive.namelist():
                     self.assertFalse(
                         {".github", "scripts", "tests", "README.md", "AGENTS.md"} & set(name.split("/")),

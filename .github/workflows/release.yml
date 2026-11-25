@@ -41,12 +41,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           RELEASE_TAG: ${{ steps.package.outputs.tag }}
+          RELEASE_ID: ${{ steps.package.outputs.release_id }}
         run: python3 -B -m scripts.release publish-curseforge
 
       - name: Verify the receipt and publish to GitHub
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.package.outputs.tag }}
+          RELEASE_ID: ${{ steps.package.outputs.release_id }}
         run: python3 -B -m scripts.release publish-github
 
       - name: Retain release files for recovery

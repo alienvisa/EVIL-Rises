@@ -1,4 +1,5 @@
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -6,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from scripts.release import bump, prepare, release_level
+from scripts.release import bump, prepare, publish, release_level
 
 
 class ReleaseTests(unittest.TestCase):
@@ -61,14 +62,53 @@ class ReleaseTests(unittest.TestCase):
                 )
             self.assertIn('Preserve the PR title when merging', failure.exception.stderr)
 
-    def test_pending_previous_release_blocks_the_next_tag(self):
+    def test_successor_resumes_the_pending_draft_from_its_tag(self):
         github = Mock()
-        github.releases.return_value = {'v0.4.5': {'draft': True, 'prerelease': False}}
-        with patch('scripts.release.stable_tags', return_value=['v0.4.5']):
-            with patch('scripts.release.next_tag', return_value='v0.4.6'):
-                with self.assertRaisesRegex(ValueError, 'Finish release v0.4.5'):
-                    prepare(github, Path('unused'))
+        github.releases.return_value = {'v0.4.5': {
+            'id': 42, 'tag_name': 'v0.4.5', 'draft': True, 'prerelease': False, 'assets': [],
+        }}
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            package = Mock(archive=directory / 'EVILRises-v0.4.5.zip')
+            package.metadata.return_value = {'releases': []}
+            with (
+                patch('scripts.release.stable_tags', return_value=['v0.4.5']),
+                patch('scripts.release.next_tag') as next_tag,
+                patch('scripts.release.git', side_effect=['tagged-sha', 'head-sha\ntagged-sha']),
+                patch('scripts.release.build_at_tag', return_value=package) as build,
+                patch('scripts.release.GitHubRelease.upload') as upload,
+            ):
+                release = prepare(github, directory)
+            self.assertEqual(release.tag, 'v0.4.5')
+            build.assert_called_once_with('v0.4.5', directory)
+            self.assertEqual(upload.call_count, 2)
+            next_tag.assert_not_called()
         github.reserve.assert_not_called()
+        github.create_draft.assert_not_called()
+
+    def test_staging_uses_create_response_before_the_release_appears_in_the_list(self):
+        github = Mock()
+        github.releases.return_value = {
+            'v0.4.4': {'draft': False, 'prerelease': False},
+        }
+        github.create_draft.return_value = {
+            'id': 42, 'tag_name': 'v0.5.0', 'draft': True, 'prerelease': False, 'assets': [],
+        }
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            package = Mock(archive=directory / 'EVILRises-v0.5.0.zip', changelog='notes')
+            package.metadata.return_value = {'releases': []}
+            with (
+                patch('scripts.release.stable_tags', return_value=['v0.4.4']),
+                patch('scripts.release.next_tag', return_value='v0.5.0'),
+                patch('scripts.release.git', return_value='source-sha'),
+                patch('scripts.release.build_at_tag', return_value=package),
+                patch('scripts.release.GitHubRelease.upload') as upload,
+            ):
+                release = prepare(github, directory)
+            self.assertEqual(release.id, 42)
+            self.assertEqual(upload.call_count, 2)
+        github.releases.assert_called_once_with()
 
     def test_published_release_without_receipt_cannot_be_the_version_baseline(self):
         github = Mock()
@@ -78,8 +118,32 @@ class ReleaseTests(unittest.TestCase):
                 {'name': 'release.json', 'state': 'uploaded'},
             ]},
         }
-        with patch('scripts.release.stable_tags', return_value=['v0.4.5']):
-            with patch('scripts.release.next_tag', return_value='v0.4.6'):
-                with self.assertRaisesRegex(ValueError, 'Release v0.4.5 is missing published assets'):
-                    prepare(github, Path('unused'))
+        with (
+            patch('scripts.release.stable_tags', return_value=['v0.4.5']),
+            patch('scripts.release.release_source', return_value='tagged-sha'),
+            self.assertRaisesRegex(ValueError, 'Release v0.4.5 is missing published assets'),
+        ):
+            prepare(github, Path('unused'))
         github.reserve.assert_not_called()
+
+    def test_publish_binds_the_receipt_to_the_tagged_commit(self):
+        github = Mock()
+        github.release.return_value.tag = 'v0.5.0'
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            metadata = directory / 'release.json'
+            metadata.write_text(json.dumps({'releases': []}), encoding='utf-8')
+            github.release.return_value.download.side_effect = [
+                directory / 'EVILRises-v0.5.0.zip', metadata,
+            ]
+            package = Mock(interface=16001, sha256='b' * 64)
+            package.metadata.return_value = {'releases': []}
+            with (
+                patch.dict(os.environ, {'CF_PROJECT_ID': '1828614'}),
+                patch('scripts.release.git', side_effect=['tagged-sha', 'new-head\ntagged-sha']),
+                patch('scripts.release.validate_archive', return_value=package),
+                patch('scripts.release.publish_curseforge') as upload,
+            ):
+                publish(github, 'v0.5.0', '42', directory, 'publish-curseforge')
+        github.release.assert_called_once_with('42')
+        self.assertEqual(upload.call_args.args[3]['sourceCommit'], 'tagged-sha')

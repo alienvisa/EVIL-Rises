@@ -64,8 +64,9 @@ The largest bump applies if several commits accumulated since the last release.
 ### Recovering a release
 
 Rerun the original release job. It reuses the staged ZIP and any valid
-`curseforge-upload.json` receipt. A newer release waits for the reserved version
-to finish.
+`curseforge-upload.json` receipt. A push to `main` also resumes the pending
+release from its original tag before allocating another version. If staging
+never finished, the job rebuilds from that tagged commit.
 
 If the job reports an unconfirmed CurseForge upload, inspect the project's
 upload history, including pending files, and the run's **release-files** artifact:

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -30,34 +31,42 @@ class GitHub:
     def __init__(self, repository):
         self.repository = repository
 
-    def command(self, *args, capture=False):
+    def command(self, *args, binary=False, payload=None):
         result = subprocess.run(
-            ["gh", *args], check=True, stdout=subprocess.PIPE if capture else None, text=True,
-            encoding="utf-8", timeout=120,
+            ["gh", *args], check=True, stdout=subprocess.PIPE,
+            input=json.dumps(payload).encode("utf-8") if payload is not None else None,
+            timeout=120,
         )
-        return result.stdout
+        return result.stdout if binary else result.stdout.decode("utf-8")
 
     def releases(self):
         pages = json.loads(self.command(
-            "api", f"repos/{self.repository}/releases", "--paginate", "--slurp", capture=True
+            "api", f"repos/{self.repository}/releases", "--paginate", "--slurp",
         ))
         return {entry["tag_name"]: entry for page in pages for entry in page}
 
     def reserve(self, tag, sha):
         self.command(
             "api", f"repos/{self.repository}/git/refs",
-            "-f", f"ref=refs/tags/{tag}", "-f", f"sha={sha}", capture=True,
+            "-f", f"ref=refs/tags/{tag}", "-f", f"sha={sha}",
         )
 
-    def create_draft(self, tag, changelog):
-        with tempfile.TemporaryDirectory() as temp:
-            notes = Path(temp) / "notes.md"
-            notes.write_text(changelog, encoding="utf-8")
-            self.command(
-                "release", "create", tag, "--repo", self.repository,
-                "--verify-tag", "--draft", "--title", f"EVIL Rises {tag}",
-                "--notes-file", str(notes),
-            )
+    def create_draft(self, tag, source, changelog):
+        return json.loads(self.command(
+            "api", f"repos/{self.repository}/releases", "--method", "POST", "--input", "-",
+            payload={
+                "tag_name": tag,
+                "target_commitish": source,
+                "name": f"EVIL Rises {tag}",
+                "body": changelog,
+                "draft": True,
+            },
+        ))
+
+    def release(self, release_id):
+        return GitHubRelease(self, json.loads(self.command(
+            "api", f"repos/{self.repository}/releases/{release_id}",
+        )))
 
 
 class GitHubRelease:
@@ -65,28 +74,34 @@ class GitHubRelease:
         if entry["prerelease"]:
             raise ValueError(f"{entry['tag_name']} is a prerelease")
         self.github = github
+        self.id = entry["id"]
         self.tag = entry["tag_name"]
         self.is_draft = entry["draft"]
         self.assets = {asset["name"]: asset for asset in entry["assets"]}
-
-    def command(self, action, *args):
-        self.github.command("release", action, self.tag, "--repo", self.github.repository, *args)
 
     def download(self, name, directory):
         asset = self.assets.get(name)
         if not asset or asset["state"] != "uploaded":
             return None
-        self.command("download", "--pattern", name, "--dir", str(directory), "--clobber")
-        return directory / name
+        path = directory / name
+        path.write_bytes(self.github.command(
+            "api", f"repos/{self.github.repository}/releases/assets/{asset['id']}",
+            "--header", "Accept: application/octet-stream", binary=True,
+        ))
+        return path
 
-    def upload(self, *paths):
+    def upload(self, path):
         if not self.is_draft:
             raise ValueError(f"Cannot add assets to the published release {self.tag}")
-        for path in paths:
-            asset = self.assets.get(path.name)
-            if asset and asset["state"] == "starter":
-                self.delete_asset(asset)
-        self.command("upload", *(str(path) for path in paths))
+        asset = self.assets.get(path.name)
+        if asset and asset["state"] == "starter":
+            self.delete_asset(asset)
+        endpoint = f"https://uploads.github.com/repos/{self.github.repository}/releases/{self.id}/assets"
+        self.assets[path.name] = json.loads(self.github.command(
+            "api", f"{endpoint}?{urlencode({'name': path.name})}",
+            "--method", "POST", "--header", "Content-Type: application/octet-stream",
+            "--input", str(path),
+        ))
 
     def delete_asset(self, asset):
         self.github.command(
@@ -98,7 +113,10 @@ class GitHubRelease:
         if self.is_draft:
             if ATTEMPT in self.assets:
                 self.delete_asset(self.assets[ATTEMPT])
-            self.command("edit", "--draft=false")
+            self.github.command(
+                "api", f"repos/{self.github.repository}/releases/{self.id}",
+                "--method", "PATCH", "-F", "draft=false",
+            )
 
 
 class CurseForge:
