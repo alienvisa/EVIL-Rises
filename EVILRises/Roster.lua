@@ -51,6 +51,15 @@ function addon.CreateRoster(page, frame)
         self:ClearFocus()
     end)
 
+    local offline = CreateFrame("CheckButton", nil, toolbar, "UICheckButtonTemplate")
+    offline:SetPoint("LEFT", search, "RIGHT", 12, 0)
+    offline:SetSize(22, 22)
+    offline:SetChecked(addon.settings.showOfflineMembers == true)
+    local offlineLabel = toolbar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    offlineLabel:SetPoint("LEFT", offline, "RIGHT", 2, 0)
+    offlineLabel:SetText("Show offline members")
+    offline:SetHitRectInsets(0, -(offlineLabel:GetStringWidth() + 2), 0, 0)
+
     local summary = toolbar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     summary:SetPoint("RIGHT", -8, 0)
     local empty = page:CreateFontString(nil, "OVERLAY", "GameFontDisable")
@@ -157,10 +166,10 @@ function addon.CreateRoster(page, frame)
         local query = search:GetText():lower():match("^%s*(.-)%s*$")
         visible = {}
         for _, member in ipairs(roster.members) do
-            if query == "" or table.concat({
+            if (member.online or addon.settings.showOfflineMembers == true) and (query == "" or table.concat({
                 member.name, member.class or "", member.race or "", member.zone or "",
                 member.professions or "", member.rank or "",
-            }, " "):lower():find(query, 1, true) then
+            }, " "):lower():find(query, 1, true)) then
                 visible[#visible + 1] = member
             end
         end
@@ -172,7 +181,11 @@ function addon.CreateRoster(page, frame)
         local total = string.format("%d online / %d members", roster.online, #roster.members)
         summary:SetText(query == "" and total or (#visible .. " found  -  " .. total))
         if #visible == 0 then
-            empty:SetText(not IsInGuild() and "You are not in a guild." or (query == "" and "Waiting for the guild roster." or "No matching members."))
+            local message = "No matching members."
+            if not IsInGuild() then message = "You are not in a guild."
+            elseif #roster.members == 0 then message = "Waiting for the guild roster."
+            elseif query == "" then message = "No members online." end
+            empty:SetText(message)
         end
         empty:SetShown(#visible == 0)
         for _, entry in ipairs(columns) do
@@ -293,6 +306,10 @@ function addon.CreateRoster(page, frame)
         search:ClearFocus()
     end)
     search:SetScript("OnTextChanged", function()
+        if roster then render(true) end
+    end)
+    offline:SetScript("OnClick", function(self)
+        addon.settings.showOfflineMembers = not not self:GetChecked()
         if roster then render(true) end
     end)
 end
