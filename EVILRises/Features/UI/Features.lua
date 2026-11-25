@@ -1,0 +1,135 @@
+----------------------------------------------------------------------
+-- EVIL Rises - Feature entries
+-- The list every surface renders from: the window's tabs, the minimap
+-- menu, the slash commands and the Settings toggles. Adding a feature
+-- means adding one entry here.
+--
+--   tab = false  -> a background module with a Settings toggle only
+--   tab = false, opens = { tab, sub } -> another tab's sub-tab, with its own Settings toggle
+----------------------------------------------------------------------
+local UI = EVRFeatures.UI
+local L  = EVRFeatures.L
+
+-- Tabs, in window order ----------------------------------------------
+-- `retail = false`: not on retail (ADR-0026), which has no Master Loot: the loot master (issue #185).
+
+UI:RegisterFeature({
+    id = "roster", label = L["Roster"], order = 10, core = true,
+    build = function(c, win) EVRFeatures:CreateRosterPanel(c, win) end,
+})
+
+UI:RegisterFeature({
+    id = "raids", label = L["Raids"], order = 20, tab = false, opens = { "guild", "raids" },
+    subs = { "sessions", "raiders", "cores", "audit", "raidtools" },
+    build = function(c, win) EVRFeatures:CreateRaidHubPanel(c, win) end,
+})
+
+-- One Loot window for every member (issue #346): the rule, the accounts, the lists and the history.
+-- On retail too since issue #183: the history and the equity of personal loot, no soft reserves.
+UI:RegisterFeature({
+    id = "loot", label = L["Loot"], order = 30, tab = false, opens = { "guild", "loot" },
+    subs = { "rule", "accounts", "lists", "history" },
+    build = function(c, win) EVRFeatures:CreateLootWindow(c, win) end,
+})
+
+-- The DKP and the guild's wishlists are the Loot window's Accounts and Lists (issue #346): their
+-- switches stay in Settings, and /eviltools open dkp or wishlist opens the sub-tab.
+UI:RegisterFeature({
+    id = "dkp", label = L["DKP"], order = 35, tab = false, opens = { "loot", "accounts" },   -- retail too since #185
+    condition = function() return EVRFeatures:LootSystemShowsDKP() end,
+})
+
+UI:RegisterFeature({
+    id = "wishlist", label = L["Wishlist"], order = 38, tab = false, opens = { "loot", "lists" },   -- retail too since #185
+    condition = function() return EVRFeatures:IsOfficer() and EVRFeatures:LootSystemShowsWishlist() end,
+})
+
+-- The Crafts tab (issue #389): the guild's professions and its craft orders in one place. The
+-- catalog is the Professions panel on WoW: Forever and retail (issue #33: the whole catalog, who
+-- covers it and who does not) and the recipe search on Anniversary; the order queue sits beside it.
+UI:RegisterFeature({
+    id = "recipes", label = L["Crafts"], order = 40,
+    build = function(c, win) return EVRFeatures:CreateCraftsTab(c, win) end,
+})
+
+-- feature is present and switched on.
+UI:RegisterFeature({
+    id = "guild", label = L["Guild"], order = 50,
+    subs = { "raids", "loot", "calendar", "activity", "bulletin", "cta", "polls", "chat", "journal" },
+    build = function(c, win) EVRFeatures:CreateGuildHub(c, win) end,
+})
+
+UI:RegisterFeature({
+    id = "bounty", label = "Bounty", order = 51,
+    build = function(page) EVRFeatures.Bounty:BuildPage(page) end,
+})
+
+-- The guild bank (issue #380): what it holds, seen from anywhere, each tab, its ledger, what it
+-- needs and what members asked for. Only where the client has a guild bank (WoW: Forever's servers may not).
+
+-- The guild's own group finder (issue #341): what is being formed, who is looking, and the game's
+-- activities as tiles. /eviltools avail opens it.
+
+-- WoW: Forever only (issue #211): the guild's journal, where the module exists. The Guild tab's
+-- Journal sub-tab since issue #367: its switch stays in Settings, and /eviltools open journal opens it.
+UI:RegisterFeature({
+    id = "journal", label = L["Journal"], order = 55, tab = false, opens = { "guild", "journal" },
+    tbc = false, retail = false, restart = true,
+})
+
+
+UI:RegisterFeature({
+    id = "alliance", label = L["Alliance"], order = 60,
+    condition = function()
+        return (EVRFeatures.Alliance and EVRFeatures.Alliance:Get() ~= nil) or EVRFeatures:IsOfficer()
+    end,
+    build = function(c, win) EVRFeatures:CreateAlliancePanel(c, win) end,
+})
+
+-- An officer's view has sub-tabs; Trials only for officers, while its feature is on (issue #367).
+UI:RegisterFeature({
+    id = "recruitment", label = L["Recruitment"], order = 70,
+    subs = { "recruiting", "scanner", "trials" },
+    build = function(c, win) EVRFeatures:CreateRecruitmentPanel(c, win) end,
+})
+
+-- The Recruitment tab's Trials sub-tab since issue #367: its switch stays in Settings, and
+-- /eviltools open trials opens it.
+UI:RegisterFeature({
+    id = "trials", label = L["Trials"], order = 80, tab = false, opens = { "recruitment", "trials" },
+    officerOnly = true,
+})
+
+UI:RegisterFeature({
+    id = "management", label = L["Leadership"], order = 90, officerOnly = true,
+    build = function(c, win) EVRFeatures:CreateManagementPanel(c, win) end,
+})
+
+
+UI:RegisterFeature({
+    id = "settings", label = L["Settings"], order = 100, core = true,
+    build = function(c, win) EVRFeatures:CreateSettingsPanel(c, win) end,
+})
+
+-- Background modules: a Settings toggle and nothing else ------------
+-- `tbc`: TBC content, listed only on TBC Anniversary (ADR-0014). `retail`: false when not on retail.
+-- `forever`: false when not on WoW: Forever (issue #187).
+local function background(id, label, desc, officerOnly, tbc, retail, forever)
+    UI:RegisterFeature({
+        id = id, label = label, desc = desc,
+        tab = false, officerOnly = officerOnly, tbc = tbc, retail = retail, forever = forever,
+        module = id,
+    })
+end
+
+background("raidTracker",       L["Raid Tracker"],       L["Track raid attendance, penalties, and sessions"], true)
+background("lootTracker",       L["Loot Tracker"],       L["Record loot drops from boss kills"])  -- personal loot on retail (#183)
+background("lootMaster",        L["Loot Master"],        L["Master Loot with wishlist auto-council"], nil, nil, false)
+-- Anniversary's and retail's (Midnight's flask, food and rune; issue #187); WoW: Forever has none.
+background("consumableChecker", L["Consumable Checker"], L["Scan raid for missing flasks/food/elixirs"], nil, nil, nil, false)
+background("raidHUD",           L["Raid CD Tracker"],    L["Floating tracker for raid cooldowns and consumable check"], nil, true)
+background("trialTracker",      L["Trial Tracker"],      L["Track trial member progress (officer)"], true)
+background("officerNotes",      L["Officer Notes"],      L["Private notes on guild members (officer)"], true)
+background("commSystem",        L["Comm System"],        L["Sync member data between addon users"])
+-- WoW: Forever only: on by default since issue #289 (was off until tested, #232).
+background("founding",          L["Founding"],           L["The guild's founding and its founding members"], nil, false, false)

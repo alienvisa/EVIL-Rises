@@ -1,8 +1,8 @@
 local _, addon = ...
 local colors = addon.colors
 
-local tabNames = { "Roster", "Raids", "Loot", "Professions", "Guild", "Alliances", "Recruitment", "Leadership", "Settings" }
-local tabWidths = { Roster = 69, Raids = 58, Loot = 49, Professions = 94, Guild = 55, Alliances = 76, Recruitment = 103, Leadership = 92, Settings = 72 }
+local tabNames = { "Roster", "Professions", "Guild", "Bounty", "Alliances", "Recruitment", "Leadership", "Settings" }
+local tabWidths = { Roster = 69, Professions = 94, Guild = 55, Bounty = 70, Alliances = 76, Recruitment = 103, Leadership = 92, Settings = 72 }
 local minWidth, minHeight = 944, 420
 local defaultWidth, defaultHeight = 1070, 620
 local panel
@@ -200,26 +200,31 @@ local function createPanel()
             page:SetAllPoints()
             pages[name] = page
             if name == "Roster" then
-                addon.CreateRoster(page)
-            elseif name == "Settings" then
-                settingsCheck(page, "Show a message on login", "showLoginMessage", -8)
-                local reset = addon.CreateThemeButton(page, "Reset tab order")
-                reset:SetSize(140, 24)
-                reset:SetPoint("TOPLEFT", 19, -52)
-                reset:SetScript("OnClick", function()
-                    order = loadTabOrder()
-                    addon.settings.tabOrder = order
-                    layoutTabs()
-                end)
+                addon.CreateRoster(page, frame)
             else
-                local label = page:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-                label:SetPoint("TOPLEFT", 18, -14)
-                label:SetText(name .. " is planned for a later build.")
+                if name == "Settings" then
+                    settingsCheck(page, "Show a message on login", "showLoginMessage", -8)
+                    local reset = addon.CreateThemeButton(page, "Reset tab order")
+                    reset:SetSize(140, 24)
+                    reset:SetPoint("TOPLEFT", 19, -52)
+                    local debugButton = addon.CreateThemeButton(page, "Open debug window")
+                    debugButton:SetSize(148, 24)
+                    debugButton:SetPoint("LEFT", reset, "RIGHT", 6, 0)
+                    debugButton:SetScript("OnClick", function() EVRFeatures.DebugWindow:Open() end)
+                    reset:SetScript("OnClick", function()
+                        order = loadTabOrder()
+                        addon.settings.tabOrder = order
+                        layoutTabs()
+                    end)
+                end
+                addon.AttachFeaturePage(page, frame, name)
             end
         end
         addon.SetGuildTabFocused(tabs[name], true)
         layoutTabs()
         pages[name]:Show()
+        local log = EVRFeatures and EVRFeatures.DebugWindow
+        if log and log.capturing then log:Record("Window", name .. " tab opened") end
     end
 
     local function dropIndex(dragged)
@@ -299,8 +304,14 @@ local function createPanel()
             updateTitle()
         end
     end)
-    frame:SetScript("OnShow", function() fitScreen(); updateTitle() end)
+    frame:SetScript("OnShow", function()
+        fitScreen()
+        updateTitle()
+        if EVRFeatures and EVRFeatures.CommSystem then EVRFeatures.CommSystem:QueueSync(true) end
+    end)
     frame:Hide()
+    frame.SelectGuildTab = selectTab
+    addon.BindFeatureWindow(frame)
     selectTab("Roster")
     return frame
 end
@@ -310,6 +321,7 @@ function addon.ShowPanel()
         panel = createPanel()
     end
     panel:Show()
+    return panel
 end
 
 function addon.TogglePanel()

@@ -30,7 +30,7 @@ local function smallIcon(parent, size, offset)
     return icon
 end
 
-function addon.CreateRoster(page)
+function addon.CreateRoster(page, frame)
     local toolbar = CreateFrame("Frame", nil, page, "BackdropTemplate")
     toolbar:SetPoint("TOPLEFT", gutter, -6)
     toolbar:SetPoint("TOPRIGHT", -gutter, -6)
@@ -276,7 +276,7 @@ function addon.CreateRoster(page)
     page:RegisterEvent("PLAYER_GUILD_UPDATE")
     page:RegisterEvent("PLAYER_TARGET_CHANGED")
     page:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
-    page:SetScript("OnEvent", function(_, event)
+    local function queueRefresh(_, event)
         if not page:IsVisible() or refreshPending then return end
         if event == "PLAYER_GUILD_UPDATE" then addon.RequestRoster() end
         refreshPending = true
@@ -284,7 +284,9 @@ function addon.CreateRoster(page)
             refreshPending = false
             if page:IsVisible() then refresh() end
         end)
-    end)
+    end
+    frame.RefreshRoster = queueRefresh
+    page:SetScript("OnEvent", queueRefresh)
     page:SetScript("OnShow", function()
         layoutColumns()
         addon.RequestRoster()

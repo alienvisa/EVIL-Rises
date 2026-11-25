@@ -1,0 +1,1367 @@
+----------------------------------------------------------------------
+-- EVIL Rises - Utilities
+-- Pure helper functions. No business logic, no persistent state writes.
+----------------------------------------------------------------------
+local L = EVRFeatures.L
+
+----------------------------------------------------------------------
+-- A localized message read back into its arguments (issue #160).
+-- The client's global strings are format strings, and a language may number its arguments and
+-- say them in another order: "%s has been kicked out of the guild by %s." in English,
+-- "%1$s wurde von %2$s aus der Gilde geworfen." in German. Reading "%1$s" as text made "%1" a
+-- back-reference in the Lua pattern: "invalid capture index" on every system message.
+-- The client also fills in a language's grammar, so a message never shows these escapes (#106):
+-- Russian declines a name, |3-3(%s), and it reads declined here: a line in the log, where nothing was
+-- logged before. French picks "de " or "d'" for |2. Korean picks a particle for what comes before it,
+-- |1이;가;, which ends up glued to that argument.
+----------------------------------------------------------------------
+local MARK = "\001"          -- stands in for a placeholder while the rest is escaped
+local formatCache = {}
+
+local function formatPattern(fmt)
+    local hit = formatCache[fmt]
+    if hit then return hit[1], hit[2], hit[3] end
+    local order, tails, n = {}, {}, 0
+    local plain = fmt:gsub("|3%-%d+%((.-)%)", "%1")
+    local marked = plain:gsub("%%(%d*)%$?([sd])()", function(index, kind, after)
+        n = n + 1
+        order[n] = tonumber(index) or n
+        tails[n] = { plain:match("^|1([^;]*);([^;]*);", after) }
+        return MARK .. kind
+    end)
+    marked = marked:gsub("|1[^;]*;[^;]*;", MARK .. "g"):gsub("|2 ?", MARK .. "f")
+    local pat = marked:gsub("([%%%(%)%.%+%-%*%?%[%]%^%$])", "%%%1")
+    pat = pat:gsub(MARK .. "s", "(.+)"):gsub(MARK .. "d", "(%%d+)"):gsub(MARK .. "g", ".-")
+    pat = pat:gsub(MARK .. "f", "d[e'] ?")
+    pat = "^" .. pat .. "$"
+    formatCache[fmt] = { pat, order, tails }
+    return pat, order, tails
+end
+
+-- Pure. The arguments of `msg` as `fmt` numbers them (args[1] is the format's first argument,
+-- wherever the language says it), as strings; nil when `msg` is not that message.
+function EVRFeatures:MatchFormat(msg, fmt)
+    if type(msg) ~= "string" or type(fmt) ~= "string" or fmt == "" then return nil end
+    local pat, order, tails = formatPattern(fmt)
+    local caps = { msg:match(pat) }
+    if caps[1] == nil then return nil end
+    local args = {}
+    for i, index in ipairs(order) do
+        local arg = caps[i]
+        for _, tail in ipairs(tails[i]) do
+            if tail ~= "" and #arg > #tail and arg:sub(-#tail) == tail then
+                arg = arg:sub(1, -#tail - 1)
+                break
+            end
+        end
+        args[index] = arg
+    end
+    return args
+end
+
+----------------------------------------------------------------------
+-- Alt / Main linking (account-wide attunement propagation)
+----------------------------------------------------------------------
+-- The officers' links are AltSync's entries, synced per alt (issue #424); `db.altLinks` is the view
+-- rebuilt from them. Each officer edit plans the new view and AltSync:Commit writes what changed, and
+-- confirms the alts in `confirm` whose link was only unconfirmed (from before #424).
+local function commitLinks(self, links, confirm)
+    if self.AltSync then return self.AltSync:Commit(links, confirm) end
+    self.db.altLinks = links
+    return 0
+end
+
+-- Pure: `links` with altKey linked to mainKey, a new table, or nil when mainKey is itself an alt (no
+-- loop). An alt that was altKey's own follows it to mainKey, so no alt ever points at an alt.
+function EVRFeatures:_PlanLink(links, altKey, mainKey)
+    if links[mainKey] then return nil end
+    local out = {}
+    for k, v in pairs(links) do out[k] = (v == altKey) and mainKey or v end
+    out[altKey] = mainKey
+    return out
+end
+
+function EVRFeatures:LinkAlt(altKey, mainKey)
+    if not self:IsOfficer() then return false end
+    if not altKey or not mainKey or altKey == mainKey then return false end
+    local planned = self:_PlanLink(self.db.altLinks or {}, altKey, mainKey)
+    -- Prevent circular links: mainKey must not itself be an alt
+    if not planned then
+        self:Print(L["Error: "] .. mainKey .. L[" is already an alt. Unlink it first."])
+        return false
+    end
+    commitLinks(self, planned, { [altKey] = true })
+    return true
+end
+
+function EVRFeatures:UnlinkAlt(altKey)
+    if not self:IsOfficer() then return false end
+    local links = {}
+    for k, v in pairs(self.db.altLinks or {}) do links[k] = v end
+    links[altKey] = nil
+    commitLinks(self, links)
+    return true
+end
+
+-- Unlink every alt of `mainKey` at once (issue #426: the main left and the officer said the group is over). Officers
+-- only. Returns how many alts were unlinked.
+function EVRFeatures:UnlinkGroup(mainKey)
+    if not self:IsOfficer() or not mainKey then return 0 end
+    local links, n = {}, 0
+    for k, v in pairs(self.db.altLinks or {}) do
+        if v == mainKey then n = n + 1 else links[k] = v end
+    end
+    if n > 0 then commitLinks(self, links) end
+    return n
+end
+
+-- Returns all keys in the same account group as playerKey (includes playerKey itself)
+function EVRFeatures:GetLinkedChars(playerKey)
+    local altLinks = (self.db and self.db.altLinks) or {}
+    -- Resolve canonical main
+    local mainKey = altLinks[playerKey] or playerKey
+    local result = { mainKey }
+    local seen = { [mainKey] = true }
+    for altK, mK in pairs(altLinks) do
+        if mK == mainKey and not seen[altK] then
+            seen[altK] = true
+            table.insert(result, altK)
+        end
+    end
+    return result
+end
+
+-- Pure re-point: given an altLinks table and a `group` (canonical main + all
+-- its alts, as GetLinkedChars returns), return a NEW altLinks table in which
+-- newMain is THE main (no entry) and every OTHER group member (including the
+-- old main) points at newMain. The input table is never mutated, and links
+-- for chars outside the group are copied through untouched. A group with
+-- fewer than 2 members is returned as an unchanged copy. Idempotent: if
+-- newMain is already the group's main the output equals the input.
+function EVRFeatures:_RepointGroup(altLinks, group, newMain)
+    local out = {}
+    for k, v in pairs(altLinks or {}) do out[k] = v end
+    if not group or #group < 2 or not newMain then return out end
+    for _, k in ipairs(group) do
+        if k == newMain then
+            out[k] = nil            -- the new main points at nobody
+        else
+            out[k] = newMain        -- old main + siblings point at newMain
+        end
+    end
+    return out
+end
+
+-- Officer-side "set which character is the main" of an existing alt group.
+-- Resolves the group via GetLinkedChars, no-ops (returns false) for a group
+-- of fewer than 2 or when newMainKey is already the main, then re-points the
+-- whole group onto newMainKey and broadcasts once. No circular link can
+-- result because newMainKey's own entry is cleared.
+function EVRFeatures:SetMain(newMainKey)
+    if not self:IsOfficer() then return false end
+    if not newMainKey then return false end
+    self.db.altLinks = self.db.altLinks or {}
+    local group = self:GetLinkedChars(newMainKey)
+    if #group < 2 then return false end                 -- nothing to re-main
+    if self.db.altLinks[newMainKey] == nil then return false end  -- already main
+    commitLinks(self, self:_RepointGroup(self.db.altLinks, group, newMainKey))
+    return true
+end
+
+----------------------------------------------------------------------
+-- General helpers
+----------------------------------------------------------------------
+function EVRFeatures:DeepCopy(orig)
+    local copy = {}
+    for k, v in pairs(orig) do
+        if type(v) == "table" then
+            copy[k] = self:DeepCopy(v)
+        else
+            copy[k] = v
+        end
+    end
+    return copy
+end
+
+function EVRFeatures:GetClassColor(class)
+    local c = self.ClassColors[class]
+    if c then
+        return c.r, c.g, c.b
+    end
+    return 1, 1, 1
+end
+
+function EVRFeatures:GetClassColorHex(class)
+    local r, g, b = self:GetClassColor(class)
+    return string.format("%02x%02x%02x", r * 255, g * 255, b * 255)
+end
+
+function EVRFeatures:ColorText(text, r, g, b)
+    return string.format("|cff%02x%02x%02x%s|r", r * 255, g * 255, b * 255, text)
+end
+
+function EVRFeatures:FormatItemLevel(ilvl)
+    if not ilvl or ilvl == 0 then return "|cff888888--|r" end
+    -- Retail's item levels move every season: a fixed band would be wrong by the next one (ADR-0026).
+    if EVRFeatures.Client and EVRFeatures.Client.isRetail then
+        local c = self.QualityColors[1]
+        return self:ColorText(tostring(ilvl), c.r, c.g, c.b)
+    end
+    local color
+    if ilvl >= 141 then      -- T6+
+        color = self.QualityColors[5]
+    elseif ilvl >= 128 then   -- T5
+        color = self.QualityColors[4]
+    elseif ilvl >= 110 then   -- T4/Heroic
+        color = self.QualityColors[3]
+    elseif ilvl >= 85 then    -- Normal dungeons
+        color = self.QualityColors[2]
+    else
+        color = self.QualityColors[1]
+    end
+    return self:ColorText(tostring(ilvl), color.r, color.g, color.b)
+end
+
+-- Whether a realm is part of who somebody is: on TBC Anniversary, and on retail, where a guild
+-- spans connected realms and "Ana-Azralon" and "Ana-Gallywix" are two people. Not on WoW: Forever,
+-- which has no realms that set players apart (issue #95). A client table with no isRetail is
+-- Forever, as every Forever harness stubs it.
+function EVRFeatures:RealmBound()
+    local c = EVRFeatures.Client
+    if not c then return true end
+    return (c.isAnniversary or c.isRetail) and true or false
+end
+
+local function isRetail() return EVRFeatures.Client and EVRFeatures.Client.isRetail end
+
+-- A realm as retail spells it in its roster and every addon-message sender: no spaces, no
+-- hyphens ("Tol Barad" -> "TolBarad", "Azjol-Nerub" -> "AzjolNerub"). A hyphen left in would
+-- also cut the key in two wherever a site splits name from realm.
+local function normalizedRealm(realm)
+    return (realm:gsub("[%s%-]", ""))
+end
+
+-- The realm this character had, from the account's record of its characters (AltAutoDetect's
+-- accountChars): its own latest entry with a realm, else the account's when every character with
+-- one agrees; nil with neither. Read once per accountChars table: the one the SavedVariables load is
+-- a new table, and while the client answers no realm nothing adds one with a realm to it.
+local savedRealm, scanned
+local function rememberedRealm()
+    local chars = type(EVRFeaturesDB) == "table" and EVRFeaturesDB.accountChars
+    if type(chars) ~= "table" then return nil end
+    if chars == scanned then return savedRealm end
+    scanned = chars
+    local me = EVRFeatures.Compat and EVRFeatures.Compat.PlayerName()
+    local mine, mineTs, account
+    for _, c in pairs(chars) do
+        local realm = type(c) == "table" and c.realm
+        if type(realm) == "string" and realm ~= "" then
+            local ts = tonumber(c.ts) or 0
+            if c.name == me and (not mine or ts > mineTs) then mine, mineTs = realm, ts end
+            if account == nil then account = realm elseif account ~= realm then account = false end
+        end
+    end
+    savedRealm = mine or account or nil
+    return savedRealm
+end
+
+-- The client's realm name, GetRealmName(). WoW: Forever's client has answered it with "" since its
+-- patch of 2026-11-21 (issue #394), and every key saved before carries the realm it answered then:
+-- the guild's db, each member and the guild the site knows. With it empty they all changed, and the
+-- addon opened an empty db over the intact one. On Forever (not RealmBound) an empty answer is the
+-- realm this character had; with none saved, "" as the client gave it.
+-- ponytail: a character first seen after that patch has no realm to remember, so if the client
+-- ever answers one again its keys change once; a realm stored per character would cover it.
+function EVRFeatures:RealmName()
+    local realm = GetRealmName()
+    if (realm and realm ~= "") or self:RealmBound() then return realm end
+    return rememberedRealm() or realm
+end
+
+-- The client's realm for member keys: RealmName(), else GetNormalizedRealmName() (a
+-- client with no realm name may still suffix roster names with a normalized one), else
+-- nil; "" counts as nothing. Anniversary always answers the first, so its keys keep their bytes.
+-- Retail asks for the normalized one first: that is how its roster writes everybody (#165).
+function EVRFeatures:GetClientRealm()
+    local realm
+    if isRetail() and GetNormalizedRealmName then realm = GetNormalizedRealmName() end
+    if not realm or realm == "" then realm = EVRFeatures:RealmName() end
+    if not realm or realm == "" then realm = GetNormalizedRealmName and GetNormalizedRealmName() end
+    if realm == "" then return nil end
+    if realm and isRetail() then realm = normalizedRealm(realm) end
+    return realm
+end
+
+-- The realm a guild is from. On retail a guild spans connected realms, so it is its home realm
+-- (GetGuildInfo's fourth answer, nil when it is this character's own), normalized: one guild,
+-- whichever of its realms a character is on. Elsewhere the client's (RealmName). The guild's database
+-- key and the companion payload's guildKey both use it (ADR-0026, issues #182, #394).
+function EVRFeatures:GuildRealm()
+    if isRetail() then
+        local home = IsInGuild() and select(4, GetGuildInfo("player"))
+        if not home or home == "" then home = GetRealmName() end
+        return home and normalizedRealm(home)
+    end
+    return self:RealmName()
+end
+
+-- A member's key is "Name-Realm", byte for byte as it has always been. WoW: Forever has
+-- no realms: when neither the caller nor the client gives one, the key is the name alone.
+-- "First Last" and "Anne-Marie" then split on the first hyphen and rejoin to themselves,
+-- so every split-and-rejoin site keeps a stable key.
+--
+-- On WoW: Forever the realm is always this client's (issue #95). Forever has no realms that set
+-- players apart (a name is unique in its region) and its guild roster gives none, yet
+-- GetRealmName() answers a name, and not the same one across a guild: on the beta,
+-- "Classic Beta PvE" for one member and "Classic Beta PvE 2" for another. A realm taken from a
+-- broadcast or a sender keyed a guildmate apart from their own roster line.
+function EVRFeatures:GetPlayerKey(name, realm)
+    if not name or name == "" then return nil end
+    if not self:RealmBound() then realm = nil end
+    if not realm or realm == "" then realm = EVRFeatures:GetClientRealm() end
+    if not realm then return name end
+    -- Retail: a realm from GetRealmName() or a unit ("Tol Barad") meets the roster's "TolBarad" (#165).
+    if isRetail() then realm = normalizedRealm(realm) end
+    return name .. "-" .. realm
+end
+
+-- The key of a guild roster line's name: "Bob-Gallywix" with its own realm, "Bob" on this client's.
+-- On retail that is what tells two connected-realm namesakes apart (ADR-0026).
+function EVRFeatures:KeyOfRosterName(full)
+    return self:GetPlayerKey(full:match("^([^-]+)") or full, full:match("^[^-]+%-(.+)$"))
+end
+
+-- A number off the network, or nil. tonumber takes "nan" and "inf" as text and reads "1e999" as inf. NaN answers
+-- false to every comparison, so it passes any check written as a refusal, and inf passes any "> 0"; and neither may
+-- ever reach a saved table, where a NaN is an unknown risk to the whole EVRFeaturesDB file.
+function EVRFeatures.Finite(v)
+    local n = tonumber(v)
+    if n and n == n and n ~= math.huge and n ~= -math.huge then return n end
+    return nil
+end
+
+-- The name as /w takes it: the hyphen where the game spells a surname with a space, or "/w Ana Lima " opens a
+-- whisper to Ana with the message "Lima ".
+function EVRFeatures:WhisperTarget(name)
+    if self.Client.has.surnames then return (name:gsub(" ", "-")) end
+    return name
+end
+
+----------------------------------------------------------------------
+-- The "No player named" line of our own addon whispers (issue #326).
+-- An addon whisper to somebody who has just logged off makes the client print ERR_CHAT_PLAYER_NOT_FOUND_S in every
+-- chat frame: a yellow line about a message the player never sent. Every addon whisper of EVRFeatures notes its target
+-- first (EVRFeatures:NoteWhisper), and the line for a name noted within WHISPER_TRIED_SECONDS is hidden. Each line hidden
+-- renews the name's window: a long message leaves in many parts, and each part to somebody gone prints its own line
+-- for as long as the parts take to go. Anybody else's line passes.
+-- The vendored mesh hides the lines of the whispers it picks itself, not ours: its WhisperTried is local, Mesh:Whisper
+-- notes nothing, and its filter is only in once its directory started, which on Anniversary it never does.
+-- Session state, in EVRFeatures.State.whispers; made on first use, after Core.lua made EVRFeatures.State.
+----------------------------------------------------------------------
+local WHISPER_TRIED_SECONDS = 30 -- seconds the line of a name we whispered stays hidden, renewed by each line hidden
+
+local function whispers()
+    local s = EVRFeatures.State.whispers
+    if not s then
+        s = { tried = {}, gone = {}, failed = {} } -- [key] = GetTime() it is ours until; fn(name) listeners; errors
+        EVRFeatures.State.whispers = s
+    end
+    return s
+end
+
+-- A name as a whisper target and a "No player named" line can both spell it: no case, hyphens as spaces.
+local function whisperKey(name)
+    return (name:lower():gsub("[%s%-]+", " "))
+end
+
+-- The keys a name answers to: whole, and without what follows its last hyphen. WoW: Forever echoes "First Surname"
+-- to a whisper to "First-Surname" or "First Surname-Realm"; elsewhere a realm may come back on a name or not.
+local function whisperKeys(name)
+    local short = name:match("^(.+)%-[^%-]+$")
+    return whisperKey(name), short and whisperKey(short) or nil
+end
+
+local function renew(tried, key, now)
+    local till = key and tried[key]
+    if not till or now > till then return false end
+    tried[key] = now + WHISPER_TRIED_SECONDS
+    return true
+end
+
+local function whisperFail(err)
+    local s, msg = whispers(), "Whispers: " .. tostring(err)
+    if s.failed[msg] then return end
+    s.failed[msg] = true
+    EVRFeatures:RecordError(msg)
+end
+
+-- The line for a name we whispered a moment ago. Chat in lockdown is secret: left alone, unread. Every chat frame
+-- runs the filter, so what it does more than once for one line must not matter.
+local function ourNotFound(msg)
+    local s = whispers()
+    if EVRFeatures.Compat.IsSecret(msg) or type(msg) ~= "string" or not next(s.tried) then return false end
+    local args = EVRFeatures:MatchFormat(msg, ERR_CHAT_PLAYER_NOT_FOUND_S)
+    local name = args and args[1]
+    if not name then return false end
+    local now, whole, short = GetTime(), whisperKeys(name)
+    local hit = renew(s.tried, whole, now)
+    hit = renew(s.tried, short, now) or hit
+    if not hit then return false end
+    for _, fn in ipairs(s.gone) do
+        local ok, err = pcall(fn, name)
+        if not ok then whisperFail(err) end
+    end
+    return true
+end
+
+-- A chat frame is no place to raise: a filter that breaks lets the line through and is recorded once.
+local function hideNotFound(_, _, msg)
+    local ok, hide = pcall(ourNotFound, msg)
+    if ok then return hide end
+    whisperFail(hide)
+    return false
+end
+
+-- Puts in the filter that hides those lines, once. True when the client has a chat filter, false when not.
+function EVRFeatures:HideWhisperErrors()
+    local s = whispers()
+    if s.filtered == nil then
+        local ok, added = pcall(EVRFeatures.Compat.AddChatFilter, "CHAT_MSG_SYSTEM", hideNotFound)
+        if not ok then whisperFail(added) end
+        s.filtered = (ok and added) and true or false
+    end
+    return s.filtered
+end
+
+-- Notes an addon whisper about to go to `name`: its "No player named" line is hidden for WHISPER_TRIED_SECONDS.
+-- Every addon whisper of ours calls it right before it sends. Returns whether a filter is there to hide the line.
+function EVRFeatures:NoteWhisper(name)
+    if self.Compat.IsSecret(name) or type(name) ~= "string" or name == "" then return false end
+    local s, now = whispers(), GetTime()
+    for key, till in pairs(s.tried) do
+        if now > till then s.tried[key] = nil end
+    end
+    local whole, short = whisperKeys(name)
+    s.tried[whole] = now + WHISPER_TRIED_SECONDS
+    if short then s.tried[short] = now + WHISPER_TRIED_SECONDS end
+    return self:HideWhisperErrors()
+end
+
+-- `fn(name)` runs for each of those lines hidden, `name` as the line spells it, maybe more than once for one line.
+function EVRFeatures:OnWhisperNotFound(fn)
+    local gone = whispers().gone
+    gone[#gone + 1] = fn
+end
+
+-- How a guildmate's key reads on screen: the name alone when they are on this character's realm, the
+-- whole "Name-Realm" when they are not, so connected-realm namesakes never read as one person (#185).
+function EVRFeatures:DisplayKey(key)
+    if type(key) ~= "string" or key == "" then return "?" end
+    local name, realm = key:match("^([^-]+)%-(.+)$")
+    if name and realm == self:GetClientRealm() then return name end
+    return key
+end
+
+-- Whether somebody is on this guild's roster, by their whole key: a guildmate on a connected realm is,
+-- a namesake from a realm the guild is not on is not (issues #183, #185).
+function EVRFeatures:IsGuildmate(playerKey)
+    if type(playerKey) ~= "string" or playerKey == "" then return false end
+    local name, realm = playerKey:match("^([^-]+)%-(.+)$")
+    local idx = EVRFeatures.Compat.FindGuildRosterIndex(name or playerKey, realm)
+    local full = idx and GetGuildRosterInfo(idx)
+    return full ~= nil and self:KeyOfRosterName(full) == playerKey
+end
+
+-- A member key another client built, as this client keys that member (issue #97). On WoW: Forever
+-- a key carries its builder's realm and a guild's clients answer different ones, so a key that
+-- arrives inside a payload is rebuilt from its name. Forever names never hold a hyphen (the roster,
+-- the senders and UnitName all give "First Surname"), so the name is what comes before the first
+-- one. Anniversary keys pass through: there a realm is part of who somebody is.
+function EVRFeatures:LocalMemberKey(key)
+    if type(key) ~= "string" or key == "" then return key end
+    if self:RealmBound() then return key end
+    if key:find("^ally:") then return key end   -- an allied guild's member, realm-free already
+    return self:GetPlayerKey(key:match("^([^-]+)") or key)
+end
+
+-- A table keyed by member keys, rekeyed with LocalMemberKey. `merge(held, incoming)` settles two
+-- records that turn out to be the same member, and only ever sees two tables: a record always
+-- beats a value that is not one, whichever came first. Without a merge the first record stays.
+function EVRFeatures:LocalizeMemberTable(t, merge)
+    if type(t) ~= "table" then return t end
+    local out = {}
+    for k, v in pairs(t) do
+        local lk = self:LocalMemberKey(k)
+        local held = out[lk]
+        if held == nil or (type(held) ~= "table" and type(v) == "table") then
+            out[lk] = v
+        elseif merge and type(held) == "table" and type(v) == "table" then
+            out[lk] = merge(held, v)
+        end
+    end
+    return out
+end
+
+-- The member-keyed tables a version before issue #97 stored with another client's keys, rekeyed
+-- this client's way, each with its own merge for two keys that turn out to be one member. Forever
+-- only, at start-up next to RekeyMembersToThisRealm, and once per database: every receive path
+-- localizes since, so another pass would only rebuild the same tables (each session's snapshots
+-- among them) on every login. Each table is its own step: bad data in one leaves the rest moved,
+-- and the database is marked done only when every step was, so a failed one is retried.
+function EVRFeatures:LocalizeStoredMemberTables()
+    if self:RealmBound() then return end
+    local db = self.db
+    if type(db) ~= "table" then return end
+    local realm = self:GetClientRealm()
+    if realm and db.storedKeysLocalized == realm then return end
+    local rt = type(db.raidTracker) == "table" and db.raidTracker or {}
+    local function points(pool)
+        if type(pool) ~= "table" or type(pool.standings) ~= "table" then return end
+        local start = tonumber(type(pool.config) == "table" and pool.config.startingPoints) or 0
+        pool.standings = self:LocalizeMemberTable(pool.standings, function(a, b)
+            a.current = (a.current or 0) + (b.current or 0) - start
+            a.earned  = (a.earned or 0) + (b.earned or 0)
+            a.spent   = (a.spent or 0) + (b.spent or 0)
+            return a
+        end)
+    end
+    local steps = {
+        function()
+            for group, recs in pairs(type(rt.attendance) == "table" and rt.attendance or {}) do
+                -- The pre-group flat format is RaidTracker:MigrateAttendanceIfNeeded's to spot and rebuild.
+                if type(recs) == "table" and recs.raids == nil and recs.lastRaid == nil and recs.raids25 == nil then
+                    rt.attendance[group] = self:LocalizeMemberTable(recs, function(a, b)
+                        local ra, rb = tonumber(a.raids) or 0, tonumber(b.raids) or 0
+                        if rb ~= ra then return rb > ra and b or a end
+                        return (tonumber(b.lastRaid) or 0) > (tonumber(a.lastRaid) or 0) and b or a
+                    end)
+                end
+            end
+        end,
+        -- A session names each player twice, in its player list and in every snapshot: both move,
+        -- or attendance rebuilt from them counts the same player late and gone early.
+        function()
+            for _, session in pairs(type(rt.sessions) == "table" and rt.sessions or {}) do
+                if type(session) == "table" then
+                    session.players = self:LocalizeMemberTable(session.players)
+                    for _, snap in ipairs(type(session.snapshots) == "table" and session.snapshots or {}) do
+                        if type(snap) == "table" then snap.members = self:LocalizeMemberTable(snap.members) end
+                    end
+                end
+            end
+        end,
+        function()
+            db.officerNotes = self:LocalizeMemberTable(db.officerNotes, function(a, b)
+                return EVRFeatures.OfficerNotes:MergeSheet(a, b)
+            end)
+        end,
+        function()
+            db.trials = self:LocalizeMemberTable(db.trials, function(a, b) return EVRFeatures.TrialTracker:Merge(a, b) end)
+        end,
+        function()
+            db.raiders = self:LocalizeMemberTable(db.raiders, function(a, b)
+                return (tonumber(b.updatedAt) or 0) > (tonumber(a.updatedAt) or 0) and b or a
+            end)
+        end,
+        function()
+            if type(db.altLinks) ~= "table" then return end
+            local links = {}
+            for alt, main in pairs(db.altLinks) do
+                local la, lm = self:LocalMemberKey(alt), self:LocalMemberKey(main)
+                if la ~= lm then links[la] = lm end
+            end
+            db.altLinks = links
+        end,
+        function() points(db.points) end,
+        -- The disciplinary record (#402): each warning names its member by key.
+        function()
+            local d = type(db.discipline) == "table" and db.discipline.warnings
+            for _, w in pairs(type(d) == "table" and d or {}) do
+                if type(w) == "table" and type(w.subject) == "string" then w.subject = self:LocalMemberKey(w.subject) end
+            end
+        end,
+        function()
+            for _, core in pairs(type(db.cores) == "table" and db.cores or {}) do
+                if type(core) == "table" then
+                    local ok = self:SafeCall(points, core.points)
+                    core.members = self:LocalizeMemberTable(core.members)
+                    core.signups = self:LocalizeMemberTable(core.signups)
+                    if not ok then error("a core's points did not move") end   -- not done: retried
+                end
+            end
+        end,
+    }
+    local done = true
+    for _, step in ipairs(steps) do done = self:SafeCall(step) and done end
+    if done then db.storedKeysLocalized = realm end
+end
+
+-- Members a version before issue #95 stored under the sender's realm move to this client's key,
+-- the newer record winning, so nobody is shown without their data or counted twice. Forever
+-- only: on Anniversary another realm is another player.
+function EVRFeatures:RekeyMembersToThisRealm()
+    if self:RealmBound() then return end
+    local members = self.db and self.db.members
+    if type(members) ~= "table" then return end
+    local moves = {}
+    for key, rec in pairs(members) do
+        local right = type(rec) == "table" and type(rec.name) == "string" and rec.name ~= ""
+            and not (EVRFeatures.Compat.IsSecret and EVRFeatures.Compat.IsSecret(rec.name)) and self:GetPlayerKey(rec.name)
+        if right and right ~= key then moves[#moves + 1] = { from = key, to = right, rec = rec } end
+    end
+    for _, mv in ipairs(moves) do
+        if members[mv.from] == mv.rec then
+            local held = members[mv.to]
+            local winner, loser = mv.rec, held
+            if held and (tonumber(held.lastUpdate) or 0) >= (tonumber(mv.rec.lastUpdate) or 0) then
+                winner, loser = held, mv.rec
+            end
+            -- What only the older record knew (a look, a spec) is kept, never what it got wrong.
+            if loser then
+                for k, v in pairs(loser) do
+                    if winner[k] == nil then winner[k] = v end
+                end
+            end
+            members[mv.to] = winner
+            members[mv.from] = nil
+        end
+    end
+end
+
+-- The roster's own key for somebody on it, built the way the roster frame builds it (the
+-- roster name, on the realm its line gives or the player's), so a note typed for them lands
+-- where their sheet reads it; then the shown name and the roster's whole name. Nil when
+-- nobody on the roster has that name.
+function EVRFeatures:RosterKey(name)
+    local idx = self.Compat.FindGuildRosterIndex(name)
+    local full = idx and GetGuildRosterInfo(idx)
+    if not full then return nil end
+    local shown = full:match("^([^-]+)") or full
+    return self:GetPlayerKey(shown, full:match("-(.+)$") or GetRealmName()), shown, full
+end
+
+-- Exactly somebody's roster name, with or without the realm. The roster lookup cuts at the
+-- hyphen, so "Bob-Spineshatter great" would otherwise pass for Bob.
+local function isRosterName(self, text)
+    local _, shown, full = self:RosterKey(text)
+    return shown ~= nil and (text == shown or text == full)
+end
+
+-- "<name> <text>" from a slash command. On WoW: Forever a name is two words ("Lethaniel
+-- Blightwood"), so the first two are the name when they are somebody on the roster;
+-- otherwise the first word, as it always was (issue #49).
+function EVRFeatures:SplitNameAndText(rest)
+    rest = strtrim(rest)
+    -- A whole name and nothing after it is a name with no note, not "Blightwood" as one.
+    if isRosterName(self, rest) then return nil end
+    local first, second, after = rest:match("^(%S+)%s+(%S+)%s+(.+)$")
+    if first and isRosterName(self, first .. " " .. second) then
+        return first .. " " .. second, after
+    end
+    return rest:match("^(%S+)%s+(.+)$")
+end
+
+----------------------------------------------------------------------
+-- Member-authored free text
+----------------------------------------------------------------------
+-- Text a player types (a public note, an LFG note) ends up in FontStrings and
+-- in the chat frame on every OTHER player's client, so it cannot be trusted
+-- raw: a bare "|" injects a texture (|T...|t), an unterminated colour (|cff...)
+-- that bleeds into the rest of the line, or a fake hyperlink (|H...|h). Strip
+-- the escape character entirely (escaping to "||" renders literally in frames
+-- that do not process escapes, so it is not equivalent) and flatten control
+-- characters and runs of whitespace.
+--
+-- maxBytes, when given, caps the result WITHOUT splitting a UTF-8 codepoint.
+-- string.sub counts bytes while SetMaxLetters counts characters, so an
+-- accented note from a ptBR/deDE/frFR/esES player is longer in bytes than it
+-- looks and a naive sub leaves a half codepoint that renders as a box.
+local function utf8Backoff(s)
+    local i = #s
+    while i > 0 do
+        local b = s:byte(i)
+        if b < 0x80 or b >= 0xC0 then break end   -- ASCII, or the lead byte
+        i = i - 1                                 -- 10xxxxxx continuation
+    end
+    if i == 0 then return s end
+    local lead, need = s:byte(i), 1
+    if lead >= 0xF0 then need = 4
+    elseif lead >= 0xE0 then need = 3
+    elseif lead >= 0xC0 then need = 2 end
+    if (#s - i + 1) < need then return s:sub(1, i - 1) end
+    return s
+end
+
+----------------------------------------------------------------------
+-- The record UI/MemberDetail.lua expects.
+--
+-- MemberDetail does NOT take a raw db.members entry: it needs the same merged
+-- view the roster builds (UI/RosterFrame.lua), because `rank` and
+-- `classDisplay` come from the LIVE guild roster and are never stored in the
+-- synced member data. Passing the raw entry crashes on a nil format argument.
+--
+-- Returns nil when the character is not on this guild's roster.
+----------------------------------------------------------------------
+function EVRFeatures:GetMemberRecord(name, realm)
+    if not name or name == "" then return nil end
+    local short = name:match("^([^-]+)") or name
+    realm = realm or GetRealmName()
+
+    local idx = self.Compat and self.Compat.FindGuildRosterIndex
+        and self.Compat.FindGuildRosterIndex(short, realm)
+    if not idx then return nil end
+
+    local full, rankName, rankIndex, level, classLoc, zone, note, officerNote,
+          isOnline, status, classFile = GetGuildRosterInfo(idx)
+    local key = self:GetPlayerKey(short, realm)
+    local data = (self.db and self.db.members and self.db.members[key]) or {}
+
+    return {
+        key          = key,
+        name         = short,
+        fullName     = full,
+        realm        = realm,
+        rank         = rankName or "",
+        rankIndex    = rankIndex,
+        level        = level or data.level or 0,
+        class        = classFile or data.class or "",
+        classDisplay = classLoc or "",
+        zone         = zone or "",
+        note         = note or "",
+        officerNote  = officerNote or "",
+        isOnline     = isOnline,
+        status       = status or "",
+        avgIlvl      = data.avgIlvl or 0,
+        gear         = data.gear,
+        -- WoW: Forever: the guild roster's professions for a member whose client sent none (issue #31).
+        professions  = data.professions or (self.Professions and self.Professions:LegacyList(key)),
+        attunements  = data.attunements,
+        stats        = data.stats,
+        spec         = data.spec,
+        mplus        = data.mplus,   -- retail, from the member's own client (issue #187)
+        vault        = data.vault,
+        race         = data.race or "",
+        lastUpdate   = data.lastUpdate or 0,
+        lastSync     = data.lastSync or 0,
+        addonVersion = data.addonVersion,
+    }
+end
+
+-- A removable chip's label (issue #59): the text cut to `maxBytes` (14) on a character
+-- boundary, ".." when something was cut, then the remove mark. UI:SetChipText shortens it
+-- further until it fits the chip in whatever font is drawing it.
+function EVRFeatures:ChipLabel(text, maxBytes)
+    local s = tostring(text or "")
+    local short = self:SanitizeUserText(s, maxBytes or 14)
+    if #short < #self:SanitizeUserText(s) then short = short .. ".." end
+    return short .. "  x"
+end
+
+-- The first `n` characters of `s`, never half of one. A byte cut splits the Cyrillic, Hangul and
+-- Han letters of four of the game's ten languages, and the names their players carry (#104).
+function EVRFeatures:Utf8Head(s, n)
+    s = tostring(s or "")
+    local i, count = 1, 0
+    while i <= #s and count < n do
+        local c = s:byte(i)
+        i = i + ((c >= 240 and 4) or (c >= 224 and 3) or (c >= 192 and 2) or 1)
+        count = count + 1
+    end
+    return s:sub(1, i - 1)
+end
+
+-- How many characters `s` has, for the same cuts.
+function EVRFeatures:Utf8Len(s)
+    local _, n = tostring(s or ""):gsub("[^\128-\191]", "")
+    return n
+end
+
+-- `s` cut to `maxBytes` without splitting a UTF-8 codepoint, and nothing else touched: a line of chat keeps
+-- its links (issue #348).
+function EVRFeatures:CutBytes(s, maxBytes)
+    s = tostring(s or "")
+    if #s <= maxBytes then return s end
+    return utf8Backoff(s:sub(1, maxBytes))
+end
+
+-- `s` in lower case past ASCII (issue #400): the site holds a guild's name to the game's with JavaScript's
+-- toLowerCase, which lowers every letter, and string.lower lowers A-Z alone, so "ÉBANO" or "ОРДЕН" would never be the
+-- site's "ébano" or "орден" here. Latin-1's capitals (À to Þ, not the ×) and Cyrillic's (Ѐ to Я) are lowered too, in
+-- UTF-8: the cased letters of the game's languages but Latin Extended's few (Œ, Ł) and Greek.
+local LATIN1_TIMES = 151   -- the second byte of "×" (U+00D7), among Latin-1's capitals and not a letter
+function EVRFeatures.FoldCase(s)
+    s = tostring(s or ""):lower()
+    s = s:gsub("\195([\128-\158])", function(c)
+        local b = c:byte()
+        if b ~= LATIN1_TIMES then return "\195" .. string.char(b + 32) end
+    end)
+    return (s:gsub("\208([\128-\175])", function(c)
+        local b = c:byte()
+        if b >= 144 and b <= 159 then return "\208" .. string.char(b + 32) end   -- А-П -> а-п
+        if b >= 160 then return "\209" .. string.char(b - 32) end                 -- Р-Я -> р-я
+        return "\209" .. string.char(b + 16)                                       -- Ѐ-Џ -> ѐ-џ
+    end))
+end
+
+--- a pair of angle brackets around the whole name taken off ("<Sons of Lothar>"), unless nothing would be left.
+function EVRFeatures.BareGuildName(name)
+    local t = strtrim(tostring(name or ""))
+    local inner = t:match("^<%s*(.-)%s*>$")
+    return (inner and inner ~= "") and inner or t
+end
+
+--- capitals aside past ASCII (FoldCase). An accent is another letter.
+function EVRFeatures.SameGuildName(a, b)
+    if type(a) ~= "string" or type(b) ~= "string" then return false end
+    return EVRFeatures.FoldCase(EVRFeatures.BareGuildName(a)) == EVRFeatures.FoldCase(EVRFeatures.BareGuildName(b))
+end
+
+function EVRFeatures:SanitizeUserText(text, maxBytes)
+    local s = (tostring(text or ""):gsub("|", ""):gsub("%c", " "):gsub("%s+", " "))
+    s = strtrim(s)
+    if maxBytes and #s > maxBytes then
+        s = utf8Backoff(s:sub(1, maxBytes))
+    end
+    return s
+end
+
+----------------------------------------------------------------------
+-- Minimal recursive-descent JSON decoder
+-- Handles objects, arrays, strings, numbers, booleans, null.
+-- What it reads comes from outside the game (the site's packages, a pasted soft-reserve export): text
+-- that is not JSON stops the read (`malformed`), and the caller gets nil. It used to stand still on a
+-- character it did not expect inside a list or an object, a number written with an exponent among
+-- them (`1e-7`), and the game froze with it.
+----------------------------------------------------------------------
+local function malformed() error("json", 0) end
+
+local function decodeJson(s)
+    local pos = 1
+
+    local function skip()
+        local np = s:match("^%s*()", pos)
+        if np then pos = np end
+    end
+
+    local parseValue  -- forward declaration (used by parseArray/parseObject)
+
+    local function parseString()
+        pos = pos + 1  -- consume opening "
+        local parts, start = {}, pos
+        while pos <= #s do
+            local c = s:sub(pos, pos)
+            if c == '"' then
+                parts[#parts+1] = s:sub(start, pos - 1)
+                pos = pos + 1
+                return table.concat(parts)
+            elseif c == '\\' then
+                parts[#parts+1] = s:sub(start, pos - 1)
+                pos = pos + 1
+                local e = s:sub(pos, pos)
+                parts[#parts+1] = (e == 'n' and '\n') or (e == 'r' and '\r')
+                              or  (e == 't' and '\t') or e
+                pos   = pos + 1
+                start = pos
+            else
+                pos = pos + 1
+            end
+        end
+        return table.concat(parts)
+    end
+
+    local function parseNumber()
+        local n, np = s:match("^(-?%d+%.?%d*)()", pos)
+        if not n then malformed() end
+        -- An exponent, as any JSON writer may give a very small or a very large number.
+        local e, ep = s:match("^([eE][-+]?%d+)()", np)
+        if e then n, np = n .. e, ep end
+        pos = np
+        local value = tonumber(n)
+        if not value then malformed() end
+        return value
+    end
+
+    local function parseArray()
+        pos = pos + 1  -- consume [
+        local arr = {}
+        skip()
+        if s:sub(pos, pos) == ']' then pos = pos + 1; return arr end
+        while true do
+            arr[#arr+1] = parseValue()
+            skip()
+            local c = s:sub(pos, pos)
+            if c == ']' then pos = pos + 1; break end
+            if c ~= ',' then malformed() end
+            pos = pos + 1
+        end
+        return arr
+    end
+
+    local function parseObject()
+        pos = pos + 1  -- consume {
+        local obj = {}
+        skip()
+        if s:sub(pos, pos) == '}' then pos = pos + 1; return obj end
+        while true do
+            skip()
+            if s:sub(pos, pos) ~= '"' then malformed() end
+            local k = parseString()
+            skip()
+            if k == nil or s:sub(pos, pos) ~= ':' then malformed() end
+            pos = pos + 1  -- consume :
+            obj[k] = parseValue()
+            skip()
+            local c = s:sub(pos, pos)
+            if c == '}' then pos = pos + 1; break end
+            if c ~= ',' then malformed() end
+            pos = pos + 1
+        end
+        return obj
+    end
+
+    parseValue = function()
+        skip()
+        local c = s:sub(pos, pos)
+        if     c == '"' then return parseString()
+        elseif c == '{' then return parseObject()
+        elseif c == '[' then return parseArray()
+        elseif c == 't' then pos = pos + 4; return true
+        elseif c == 'f' then pos = pos + 5; return false
+        elseif c == 'n' then pos = pos + 4; return nil
+        else                  return parseNumber()
+        end
+    end
+
+    return parseValue()
+end
+
+-- nil for text that is not JSON, whatever stopped the read (a character out of place, nesting too
+-- deep for the client): the caller never sees an error, as it never did.
+local function JsonDecode(s)
+    if type(s) ~= "string" then return nil end
+    local ok, value = pcall(decodeJson, s)
+    if ok then return value end
+    return nil
+end
+
+-- Shared: SoftRes reads Gargul's JSON with it and the companion import the site's. It lives here,
+-- loaded on every client, because SoftRes is absent on retail and the import is not (issue #182).
+EVRFeatures.JsonDecode = JsonDecode
+
+function EVRFeatures:RegisterUtilTests()
+    if not self.SelfTest then return end
+    self.SelfTest:Register("utils.sanitize_escapes", function()
+        if self:SanitizeUserText("|cffFF0000red|r") ~= "cffFF0000redr" then
+            return false, "pipe not stripped"
+        end
+        if self:SanitizeUserText("|TInterface\\Icons\\X:64|t") ~= "TInterface\\Icons\\X:64t" then
+            return false, "texture escape survived"
+        end
+        if self:SanitizeUserText("a\nb\tc") ~= "a b c" then return false, "control chars" end
+        if self:SanitizeUserText("  spaced   out  ") ~= "spaced out" then return false, "trim/collapse" end
+        if self:SanitizeUserText(nil) ~= "" then return false, "nil" end
+        if self:SanitizeUserText({}) == nil then return false, "table must not error" end
+        return true
+    end)
+    self.SelfTest:Register("utils.sanitize_utf8_cap", function()
+        if self:SanitizeUserText("abcdef", 3) ~= "abc" then return false, "ascii cap" end
+        if self:SanitizeUserText("abc", 10) ~= "abc" then return false, "under cap untouched" end
+        -- "ação" is a,\xC3\xA7,a,o = 5 bytes. Capping at 2 must drop the split
+        -- two-byte sequence, not leave half of it behind.
+        local acao = "a\195\167ao"
+        if self:SanitizeUserText(acao, 2) ~= "a" then return false, "split codepoint kept" end
+        if self:SanitizeUserText(acao, 3) ~= "a\195\167" then return false, "whole codepoint dropped" end
+        if self:SanitizeUserText(acao, 5) ~= acao then return false, "exact fit" end
+        return true
+    end)
+    -- _RepointGroup is pure: no db, no comm. Pin the three re-main outcomes.
+    self.SelfTest:Register("altlink.repoint_promote", function()
+        local links = { ["Alt-R"] = "Main-R", ["Alt2-R"] = "Main-R" }
+        local out = self:_RepointGroup(links, { "Main-R", "Alt-R", "Alt2-R" }, "Alt-R")
+        if out["Alt-R"] ~= nil then return false, "new main must have no entry" end
+        if out["Main-R"] ~= "Alt-R" then return false, "old main not re-pointed" end
+        if out["Alt2-R"] ~= "Alt-R" then return false, "sibling not re-pointed" end
+        if links["Alt-R"] ~= "Main-R" then return false, "input mutated" end
+        return true
+    end)
+    self.SelfTest:Register("altlink.repoint_single", function()
+        local out = self:_RepointGroup({}, { "Solo-R" }, "Solo-R")
+        if next(out) ~= nil then return false, "1-member group must add nothing" end
+        return true
+    end)
+    self.SelfTest:Register("altlink.repoint_noop_main", function()
+        local out = self:_RepointGroup({ ["Alt-R"] = "Main-R" }, { "Main-R", "Alt-R" }, "Main-R")
+        if out["Main-R"] ~= nil then return false, "main must stay the main" end
+        if out["Alt-R"] ~= "Main-R" then return false, "alt must be unchanged" end
+        return true
+    end)
+end
+
+-- A date with day and month in the order the client's language writes them, then `rest`
+-- (" %H:%M", "/%Y"): the addon read month first in every language (issue #170).
+local MONTH_FIRST = { enUS = true, koKR = true, zhCN = true, zhTW = true }
+function EVRFeatures:DateText(timestamp, rest)
+    return date((MONTH_FIRST[GetLocale()] and "%m/%d" or "%d/%m") .. (rest or ""), timestamp)
+end
+
+function EVRFeatures:TimeAgo(timestamp)
+    if not timestamp or timestamp == 0 then return L["Never"] end
+    local diff = time() - timestamp
+    if diff < 60 then return L["Just now"]
+    elseif diff < 3600 then return math.floor(diff / 60) .. L["m ago"]
+    elseif diff < 86400 then return math.floor(diff / 3600) .. L["h ago"]
+    else return math.floor(diff / 86400) .. L["d ago"]
+    end
+end
+
+----------------------------------------------------------------------
+-- Chat Player Link: Guild Invite
+-- Alt+Click a player name in chat to send a guild invite
+----------------------------------------------------------------------
+function EVRFeatures:HookChatInvite()
+    hooksecurefunc("SetItemRef", function(link, _, button)
+        if not EVRFeatures.Compat.AddonMayInvite() then return end   -- Anniversary only (#256)
+        if button ~= "LeftButton" or not IsAltKeyDown() then return end
+        if not link then return end
+
+        local name = link:match("^player:([^:]+)")
+        if not name or name == "" then return end
+        local function send()
+            if EVRFeatures.Compat.GuildInvite(name) then
+                EVRFeatures:Print(L["Guild invite sent to "] .. name .. L[". (Alt+Click)"])
+            end
+        end
+        -- The alliance has banned them: the officer reads why first (#408).
+        local BL = EVRFeatures.BanList
+        if not (BL and BL.HoldInvite and BL:HoldInvite(name, send)) then send() end
+    end)
+end
+
+----------------------------------------------------------------------
+-- Profession Freshness Check & Reminder
+----------------------------------------------------------------------
+local STALE_THRESHOLD = 86400 -- 24 hours
+
+function EVRFeatures:GetStaleProfessions()
+    local myData = self.db and self.db.myData
+    if not myData or not myData.professions then return {} end
+
+    local scanTimes = (self.db and self.db.recipeScanTimes) or {}
+    local stale = {}
+    local now = time()
+
+    local DC = self.DataCollector
+    for _, prof in ipairs(myData.professions) do
+        local isGathering = DC and DC.IsGatheringProfession and DC:IsGatheringProfession(prof.name)
+        if prof.isPrimary and prof.name and not isGathering then
+            local lastScan = scanTimes[prof.name]
+            if not lastScan or (now - lastScan) > STALE_THRESHOLD then
+                table.insert(stale, prof.name)
+            end
+        end
+    end
+
+    return stale
+end
+
+function EVRFeatures:CheckProfessionFreshness()
+    if self.Professions then return end   -- WoW: Forever reads recipes without a window (issue #31)
+    local stale = self:GetStaleProfessions()
+    if #stale == 0 then return end
+
+    self:ShowProfessionReminder(stale)
+    self:Print(string.format(L["|cffFFAA00You have %d profession(s) with outdated recipe data.|r Open them to sync!"], #stale))
+end
+
+function EVRFeatures:ShowProfessionReminder(staleProfessions)
+    if self.profReminderFrame then
+        self.profReminderFrame:Hide()
+        self.profReminderFrame = nil
+    end
+
+    local C = self.Colors
+
+    local frame = CreateFrame("Frame", "EVRFeaturesProfReminder", UIParent, "BackdropTemplate")
+    frame:SetSize(420, 70)
+    frame:SetPoint("TOP", UIParent, "TOP", 0, -80)
+    frame:SetFrameStrata("HIGH")
+    frame:SetFrameLevel(100)
+    frame:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        edgeSize = EVRFeatures.UI:Edge(frame),
+    })
+    frame:SetBackdropColor(0.066, 0.066, 0.084, 0.95)
+    frame:SetBackdropBorderColor(C.accent.r, C.accent.g, C.accent.b, 0.8)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetScript("OnDragStart", function(self) self:StartMoving() end)
+    frame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+
+    -- Accent stripe on top
+    local stripe = frame:CreateTexture(nil, "ARTWORK")
+    stripe:SetTexture("Interface\\Buttons\\WHITE8x8")
+    stripe:SetVertexColor(C.accent.r, C.accent.g, C.accent.b, 0.9)
+    stripe:SetHeight(2)
+    stripe:SetPoint("TOPLEFT", 1, -1)
+    stripe:SetPoint("TOPRIGHT", -1, -1)
+
+    -- Icon (trade skill icon)
+    local icon = frame:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(28, 28)
+    icon:SetPoint("LEFT", 12, 0)
+    icon:SetTexture("Interface\\Icons\\INV_Misc_Wrench_01")
+
+    -- Title
+    local titleFS = frame:CreateFontString(nil, "OVERLAY")
+    EVRFeatures:ApplyFont(titleFS, 11)
+    titleFS:SetPoint("TOPLEFT", icon, "TOPRIGHT", 8, -2)
+    titleFS:SetTextColor(C.gold.r, C.gold.g, C.gold.b)
+    titleFS:SetText(L["EVIL Rises — Profession Sync Required"])
+
+    -- Description
+    -- Kept in English as keys; shown in the reader's language (issue #114).
+    local shown = {}
+    for i, name in ipairs(staleProfessions) do shown[i] = L[name] end
+    local profNames = table.concat(shown, ", ")
+    local descFS = frame:CreateFontString(nil, "OVERLAY")
+    EVRFeatures:ApplyFont(descFS, 10)
+    descFS:SetPoint("TOPLEFT", titleFS, "BOTTOMLEFT", 0, -4)
+    descFS:SetWidth(320)
+    descFS:SetJustifyH("LEFT")
+    descFS:SetWordWrap(true)
+    descFS:SetTextColor(C.silver.r, C.silver.g, C.silver.b)
+    descFS:SetText(L["Open your profession windows to update recipe data:\n|cffFFFFFF"] .. profNames .. "|r")
+
+    -- Close button
+    local closeBtn = CreateFrame("Button", nil, frame)
+    closeBtn:SetSize(16, 16)
+    closeBtn:SetPoint("TOPRIGHT", -4, -4)
+    closeBtn:SetNormalFontObject(GameFontNormalSmall)
+
+    local closeFS = closeBtn:CreateFontString(nil, "OVERLAY")
+    EVRFeatures:ApplyFont(closeFS, 12)
+    closeFS:SetPoint("CENTER", 0, 0)
+    closeFS:SetText("x")
+    closeFS:SetTextColor(C.silver.r, C.silver.g, C.silver.b)
+
+    closeBtn:SetScript("OnEnter", function()
+        closeFS:SetTextColor(C.red.r, C.red.g, C.red.b)
+    end)
+    closeBtn:SetScript("OnLeave", function()
+        closeFS:SetTextColor(C.silver.r, C.silver.g, C.silver.b)
+    end)
+    closeBtn:SetScript("OnClick", function()
+        frame:Hide()
+        EVRFeatures.profReminderFrame = nil
+    end)
+
+    -- Fade in
+    frame:SetAlpha(0)
+    frame:Show()
+    local elapsed = 0
+    frame:SetScript("OnUpdate", function(self, dt)
+        elapsed = elapsed + dt
+        if elapsed < 0.3 then
+            self:SetAlpha(elapsed / 0.3)
+        else
+            self:SetAlpha(1)
+            self:SetScript("OnUpdate", nil)
+        end
+    end)
+
+    self.profReminderFrame = frame
+    self.profReminderStale = {}
+    for _, name in ipairs(staleProfessions) do
+        self.profReminderStale[name] = true
+    end
+end
+
+function EVRFeatures:CheckAndDismissProfessionReminder()
+    if not self.profReminderFrame or not self.profReminderStale then return end
+
+    local scanTimes = (self.db and self.db.recipeScanTimes) or {}
+    local now = time()
+
+    for profName, _ in pairs(self.profReminderStale) do
+        local lastScan = scanTimes[profName]
+        if lastScan and (now - lastScan) <= STALE_THRESHOLD then
+            self.profReminderStale[profName] = nil
+        end
+    end
+
+    -- Check if any are still stale
+    if not next(self.profReminderStale) then
+        local frame = self.profReminderFrame
+        -- Fade out
+        local elapsed = 0
+        frame:SetScript("OnUpdate", function(self, dt)
+            elapsed = elapsed + dt
+            if elapsed < 0.5 then
+                self:SetAlpha(1 - (elapsed / 0.5))
+            else
+                self:Hide()
+                self:SetScript("OnUpdate", nil)
+                EVRFeatures.profReminderFrame = nil
+                EVRFeatures.profReminderStale = nil
+            end
+        end)
+        EVRFeatures:Print(L["|cff00ff00All professions synced!|r Recipe data is up to date."])
+    end
+end
+
+function EVRFeatures:DismissProfessionReminder()
+    if self.profReminderFrame then
+        self.profReminderFrame:Hide()
+        self.profReminderFrame = nil
+        self.profReminderStale = nil
+    end
+end
+
+----------------------------------------------------------------------
+-- Data exports (tab-separated, paste straight into Sheets/Excel).
+-- Headers stay in English on purpose so exports are a stable interchange
+-- format regardless of the client locale.
+----------------------------------------------------------------------
+-- The roster as tab-separated text; the Attunements column only where the game has them (TBC,
+-- ADR-0014; issue #184), as Exporter:RosterData.
+function EVRFeatures:ExportRoster()
+    local AT = self.AttunementTracker
+    local lines = { AT and "Name\tClass\tLevel\tRank\tiLvl\tAttendance%\tAttunements\tLastSeen"
+        or "Name\tClass\tLevel\tRank\tiLvl\tAttendance%\tLastSeen" }
+    local n = GetNumGuildMembers() or 0
+    for i = 1, n do
+        local name, rankName, _, level, _, _, _, _, _, _, classFile = GetGuildRosterInfo(i)
+        if name then
+            local short = name:match("^([^-]+)") or name
+            local realm = name:match("-(.+)$") or GetRealmName()
+            local key = self:GetPlayerKey(short, realm)
+            local d = self.db.members[key] or {}
+            local att = self.RaidTracker and self.RaidTracker:GetAttendance25ManPercent(key) or 0
+            local lastSeen = (d.lastUpdate and d.lastUpdate > 0) and date("%Y-%m-%d", d.lastUpdate) or ""
+            local row = { short, classFile or "", level or 0, rankName or "", d.avgIlvl or 0, att }
+            if AT then
+                local attDone, attTotal = 0, #AT:GetGuildColumns()
+                for _, a in ipairs(AT:GetEffectiveAttunements(key)) do
+                    if a.complete and a.questsTotal and a.questsTotal > 0 then attDone = attDone + 1 end
+                end
+                row[#row + 1] = attDone .. "/" .. attTotal
+            end
+            row[#row + 1] = lastSeen
+            lines[#lines + 1] = table.concat(row, "\t")
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
+function EVRFeatures:ExportLoot()
+    local lines = { "Date\tItem\tPlayer\tRaid" }
+    for _, e in ipairs(self.db.lootHistory or {}) do
+        local itemName = (e.itemLink and EVRFeatures.Compat.GetItemInfo(e.itemLink)) or e.itemName or "?"
+        local dateStr = e.timestamp and date("%Y-%m-%d %H:%M", e.timestamp) or ""
+        lines[#lines + 1] = table.concat({ dateStr, itemName, e.player or "?", e.raid or "" }, "\t")
+    end
+    return table.concat(lines, "\n")
+end
+
+----------------------------------------------------------------------
+-- First-seen tracking. WoW exposes no guild join date, so EVRFeatures
+-- records when it first observed each member in the roster. This is a
+-- "known to EVRFeatures since" date, not the true join date.
+----------------------------------------------------------------------
+function EVRFeatures:RecordFirstSeen()
+    if not self.db then return end
+    if not self.db.firstSeen then self.db.firstSeen = {} end
+    -- The first look at a guild sees everybody at once, and nobody there just joined: the digest
+    -- counts from it (issue #170). It waits for the whole roster, or the rest would read as new.
+    if not next(self.db.firstSeen) then
+        if not self:WholeRoster() then return end
+        self.db.firstSeenSince = GetServerTime()
+    end
+    local now = GetServerTime()
+    local n = GetNumGuildMembers() or 0
+    for i = 1, n do
+        local name = GetGuildRosterInfo(i)
+        if name then
+            local short = name:match("^([^-]+)") or name
+            local realm = name:match("-(.+)$") or GetRealmName()
+            local key = self:GetPlayerKey(short, realm)
+            if not self.db.firstSeen[key] then
+                self.db.firstSeen[key] = now
+            end
+        end
+    end
+end
+
+function EVRFeatures:GetFirstSeen(playerKey)
+    return self.db and self.db.firstSeen and self.db.firstSeen[playerKey]
+end
+
+----------------------------------------------------------------------
+-- The guild roster's names, or nil while it is not the whole guild: not loaded yet (it reads as
+-- empty), or with a row the client did not answer, when that member would read as gone. Whatever
+-- acts on "not on the roster" asks here first (issue #203). "Show Offline Members" is not asked:
+-- GetNumGuildMembers counts the whole guild either way, and with it off retail 12.1.5 still
+-- answered all 943 rows of a guild with 10 online; a client that hid them would leave rows empty.
+----------------------------------------------------------------------
+function EVRFeatures:WholeRoster()
+    local n = GetNumGuildMembers() or 0
+    if n == 0 then return nil end
+    local names = {}
+    for i = 1, n do
+        local full = GetGuildRosterInfo(i)
+        if not full then return nil end
+        names[i] = full
+    end
+    return names
+end
+
+----------------------------------------------------------------------
+-- Whoever leaves the guild goes with it (issue #203): on every roster update, in every client,
+-- with no button to press. What describes them as a member goes: the member row, first-seen,
+-- professions, recipes and wishlist. What happened and what officers wrote stays: attendance,
+-- loot, notes, trials, the ban list, loot priorities, alts. Nothing happens while the roster is
+-- not whole (WholeRoster), nor while the loaded db is another guild's (it is resolved at login
+-- only: a guild changed mid-session would be read against the wrong roster). The player's own
+-- records always stay: were the own key ever to differ from the roster's (a surname the client
+-- did not give), dropping them would wipe what this client publishes.
+-- ponytail: a full pass on every GUILD_ROSTER_UPDATE, like RecordFirstSeen's; throttle it if a big
+-- guild ever shows it in a profile.
+----------------------------------------------------------------------
+function EVRFeatures:DropDeparted()
+    local roster = self.db and self:IsOnGuildDB() and self:WholeRoster()
+    if not roster then return end
+    local me = self:GetPlayerKey(self.Compat.PlayerName())
+    local present = { [me] = true }
+    -- guildWishlists is keyed by the name lowercased, with its realm on retail only.
+    local names = { [me:lower()] = true, [(self.Compat.PlayerName() or ""):lower()] = true }
+    for _, full in ipairs(roster) do
+        local key = self:KeyOfRosterName(full)
+        present[key] = true
+        names[key:lower()], names[(full:match("^([^-]+)") or full):lower()] = true, true
+    end
+    -- A members row their own client never published is an inspect (SpecChecker): a pug, or on
+    -- retail a cross-guild core member whose scanned spec picks their role. Not a guildmate's sheet.
+    for key, rec in pairs(self.db.members or {}) do
+        if not present[key] and (tonumber(rec.lastUpdate) or 0) > 0 then self.db.members[key] = nil end
+    end
+    -- A founder who left loses the badge before their date goes (WoW: Forever, issue #209).
+    if self.Founding then self.Founding:Departed(present) end
+    -- A birthday is personal data: it goes with its member (issue #428).
+    if self.Birthdays then self.Birthdays:Departed(present) end
+    for _, store in ipairs({ "firstSeen", "recipes" }) do
+        for key in pairs(self.db[store] or {}) do
+            if not present[key] then self.db[store][key] = nil end
+        end
+    end
+    for key in pairs(self.db.professions or {}) do
+        if not present[key] then
+            self.db.professions[key] = nil
+            if self.Professions then self.Professions:Changed(key) end
+        end
+    end
+    for key in pairs(self.db.guildWishlists or {}) do
+        if not names[key] then self.db.guildWishlists[key] = nil end
+    end
+end

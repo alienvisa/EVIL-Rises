@@ -1,0 +1,287 @@
+----------------------------------------------------------------------
+-- EVIL Rises - Loot Tracker
+-- The loot history. On TBC Anniversary and WoW: Forever: items awarded
+-- by the Master Looter (officer-only), via RecordMLAward; generic
+-- CHAT_MSG_LOOT is NOT tracked. On retail, where loot is personal and
+-- nobody hands anything out: what each guildmate received from a boss
+-- inside a tracked raid session, via OnEncounterLoot (issue #183), and
+-- the awards of the loot council by trade, via RecordTradeAward (#185).
+----------------------------------------------------------------------
+local LootTracker = {}
+EVRFeatures.LootTracker = LootTracker
+
+local HISTORY_MAX = 500         -- entries kept, newest first
+local WHY_KEEP = 200            -- newest entries that keep the record of why they were awarded (issue #336)
+-- Personal loot (retail, issue #183).
+local PERSONAL_MIN_QUALITY = 3  -- Rare: the loot master's default threshold (LootMaster.LOOT_THRESHOLD)
+local PERSONAL_UNKNOWN_QUALITY = 4  -- an item neither cached nor coloured in its link: a boss's, as an ML award assumes
+local REFIRE_WINDOW = 300       -- seconds; the same boss, item and player again within this is the same drop
+local TRADE_WINDOW = 7200       -- seconds a personal item stays tradeable after it drops (issue #185)
+
+function LootTracker:Initialize()
+    if not EVRFeatures.db.lootHistory then
+        EVRFeatures.db.lootHistory = {}
+    end
+    -- Retail only: Forever and Anniversary keep the master-loot path and nothing else (issue #183).
+    if EVRFeatures.Client.isRetail then
+        local frame = CreateFrame("Frame")
+        EVRFeatures.Compat.RegisterEvent(frame, "ENCOUNTER_LOOT_RECEIVED")
+        frame:SetScript("OnEvent", function(_, _, ...) LootTracker:OnEncounterLoot(...) end)
+    end
+end
+
+local function remember(entry)
+    -- Switched off in Settings, the history records nothing (issue #294): the switch used to do nothing.
+    if EVRFeatures.IsFeatureEnabled and not EVRFeatures:IsFeatureEnabled("lootTracker") then return end
+    if not EVRFeatures.db.lootHistory then
+        EVRFeatures.db.lootHistory = {}
+    end
+    table.insert(EVRFeatures.db.lootHistory, 1, entry)
+    while #EVRFeatures.db.lootHistory > HISTORY_MAX do
+        table.remove(EVRFeatures.db.lootHistory)
+    end
+    LootTracker:PruneWhy()
+end
+
+-- The record of why an item was awarded (issue #336) is kept on the newest entries only: the saved
+-- file and the upload to the site stay small however long the history grows.
+function LootTracker:PruneWhy()
+    local kept = 0
+    for _, e in ipairs(EVRFeatures.db.lootHistory or {}) do
+        if e.why ~= nil then
+            kept = kept + 1
+            if kept > WHY_KEEP then e.why = nil end
+        end
+    end
+end
+
+-- Record a master-loot award to the persistent history.
+-- Called by LootMaster:AwardLoot (locally) and by the AWARD
+-- addon message handler (peers, officer-verified).
+function LootTracker:RecordMLAward(entry)
+    remember(entry)
+end
+
+-- The raid session personal loot belongs to: a tracked one this client is standing in, on its
+-- difficulty, as its snapshots and bosses are (RaidTracker:ElsewhereInGrace). Raid Finder of the same
+-- raid, queued during the grace, is the same instance id with strangers' items (issue #183).
+local function sessionHere()
+    local RT = EVRFeatures.RaidTracker
+    local session = RT and RT.trackingActive and RT.currentRaid
+    if not session or RT:ElsewhereInGrace() then return nil end
+    local _, instanceType, difficultyID, _, _, _, _, instanceID = GetInstanceInfo()
+    if instanceType ~= "raid" or instanceID ~= session.instanceID then return nil end
+    if session.difficulty and tonumber(difficultyID) ~= session.difficulty then return nil end
+    return session
+end
+
+-- Only a guildmate's loot, by their whole key (EVRFeatures:IsGuildmate). A pickup raid's strangers are not
+-- the guild's loot; on Forever an item needs an award from this guild's officer to be recorded at all
+-- (issue #183).
+local function guildmate(playerKey)
+    return EVRFeatures:IsGuildmate(playerKey)
+end
+
+-- An item's quality and name: the client's when it has the item cached, else what the link carries
+-- (retail colours a link by quality, "|cnIQ4:", and names it in brackets).
+local function itemFacts(itemLink)
+    local name, _, quality = EVRFeatures.Compat.GetItemInfo(itemLink)
+    quality = quality or tonumber(itemLink:match("|cnIQ(%d+):")) or PERSONAL_UNKNOWN_QUALITY
+    return quality, name or itemLink:match("|h%[(.-)%]|h") or ""
+end
+
+-- Whether this drop was just recorded: the event can come again for the same item.
+local function refired(encounterID, itemId, playerKey, now)
+    for _, e in ipairs(EVRFeatures.db.lootHistory or {}) do
+        if now - (tonumber(e.timestamp) or 0) > REFIRE_WINDOW then return false end
+        if e.encounterID == encounterID and e.itemId == itemId and e.playerKey == playerKey then return true end
+    end
+    return false
+end
+
+-- Record one guildmate's personal loot from ENCOUNTER_LOOT_RECEIVED (retail, issue #183): every
+-- guildmate's item, not only mine, in the shape an ML award has, named and keyed by the player's own
+-- realm. The event names someone on this character's realm without one, so the bare name would mean
+-- another person to an alt on a connected realm: `player` is the whole Name-Realm too.
+function LootTracker:OnEncounterLoot(encounterID, itemID, itemLink, quantity, playerName, className)
+    if not EVRFeatures.Client.isRetail then return end
+    -- Midnight may hand any field as a secret, which is never compared, joined or stored; a record
+    -- without it would be half a record, so the item is skipped whole.
+    if EVRFeatures.Compat.IsSecret(encounterID, itemID, itemLink, quantity, playerName, className) then return end
+    if type(itemLink) ~= "string" or type(playerName) ~= "string" or playerName == "" then return end
+    if not EVRFeatures:IsFeatureEnabled("lootTracker") then return end
+    local session = sessionHere()
+    if not session then return end
+
+    local quality, itemName = itemFacts(itemLink)
+    if quality < PERSONAL_MIN_QUALITY then return end
+    local name, realm = playerName:match("^([^-]+)%-(.+)$")
+    local playerKey = EVRFeatures:GetPlayerKey(name or playerName, realm)
+    if not guildmate(playerKey) then return end
+    local itemId = tonumber(itemID) or tonumber(itemLink:match("item:(%d+)")) or 0
+    local now = GetServerTime()
+    if refired(encounterID, itemId, playerKey, now) then return end
+
+    remember({
+        itemLink    = itemLink,
+        itemId      = itemId,
+        itemName    = itemName,
+        quality     = quality,
+        player      = playerKey,
+        playerKey   = playerKey,
+        count       = tonumber(quantity) or 1,
+        timestamp   = now,
+        raid        = session.name or "",
+        instanceID  = session.instanceID,
+        encounterID = encounterID,
+    })
+end
+
+-- The row of a guildmate's drop of an item still within its trade window, not awarded yet: the newest.
+function LootTracker:DropOf(playerKey, itemId)
+    local now = GetServerTime()
+    for _, e in ipairs(EVRFeatures.db.lootHistory or {}) do
+        if now - (tonumber(e.timestamp) or 0) > TRADE_WINDOW then return nil end   -- newest first
+        local id = e.itemId or tonumber((e.itemLink or ""):match("item:(%d+)"))
+        if e.playerKey == playerKey and id == itemId and not e.awarded then return e end
+    end
+    return nil
+end
+
+-- Record an award by trade (retail, issue #185): a guildmate's personal item, offered to the raid,
+-- awarded and traded to the winner. The holder's own row of that drop becomes the winner's, so one
+-- item is one row and equity counts it once, with `awarded` and the holder in `from`; a client that
+-- missed the drop gets a new row. Either way the row is stamped with the drop's time as the holder's
+-- client had it (`timestamp`, carried by the offer), so every client writes the same row and the site
+-- keeps one. `award`: { itemLink, itemId, holder, winner, timestamp, raid, instanceID, why }. Returns the
+-- row. `why` is the record of the award (issue #336), kept with the row.
+function LootTracker:RecordTradeAward(award)
+    if not (award and award.holder and award.winner and award.itemLink) then return nil end
+    local itemId = tonumber(award.itemId) or tonumber(award.itemLink:match("item:(%d+)")) or 0
+    local stamp = tonumber(award.timestamp) or GetServerTime()
+    local e = self:DropOf(award.holder, itemId)
+    if e then
+        e.player, e.playerKey, e.awarded, e.from, e.timestamp = award.winner, award.winner, true, award.holder, stamp
+        e.why = award.why
+        self:PruneWhy()
+        return e
+    end
+    local quality, itemName = itemFacts(award.itemLink)
+    local row = {
+        itemLink   = award.itemLink,
+        itemId     = itemId,
+        itemName   = itemName,
+        quality    = quality,
+        player     = award.winner,
+        playerKey  = award.winner,
+        count      = 1,
+        timestamp  = stamp,
+        raid       = award.raid or "",
+        instanceID = award.instanceID or 0,
+        awarded    = true,
+        from       = award.holder,
+        why        = award.why,
+    }
+    -- Where its time puts it, so the history stays newest first for the readers that stop at an old row.
+    local h = EVRFeatures.db.lootHistory
+    local at = 1
+    while h[at] and (tonumber(h[at].timestamp) or 0) > stamp do at = at + 1 end
+    table.insert(h, at, row)
+    while #h > HISTORY_MAX do table.remove(h) end
+    self:PruneWhy()
+    return row
+end
+
+function LootTracker:GetHistory(limit)
+    limit = limit or 50
+    local result = {}
+    for i = 1, math.min(limit, #EVRFeatures.db.lootHistory) do
+        result[i] = EVRFeatures.db.lootHistory[i]
+    end
+    return result
+end
+
+function LootTracker:GetPlayerLoot(playerKey, limit)
+    limit = limit or 20
+    local result = {}
+    for _, entry in ipairs(EVRFeatures.db.lootHistory) do
+        if entry.playerKey == playerKey then
+            table.insert(result, entry)
+            if #result >= limit then break end
+        end
+    end
+    return result
+end
+
+function LootTracker:GetLootCount(playerKey)
+    local count = 0
+    for _, entry in ipairs(EVRFeatures.db.lootHistory) do
+        if entry.playerKey == playerKey then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+function LootTracker:GetRaidLoot(raidName, limit)
+    limit = limit or 50
+    local result = {}
+    for _, entry in ipairs(EVRFeatures.db.lootHistory) do
+        if entry.raid == raidName then
+            table.insert(result, entry)
+            if #result >= limit then break end
+        end
+    end
+    return result
+end
+
+function LootTracker:DeleteEntry(index)
+    if EVRFeatures.db.lootHistory[index] then
+        table.remove(EVRFeatures.db.lootHistory, index)
+    end
+end
+
+function LootTracker:ClearHistory()
+    wipe(EVRFeatures.db.lootHistory)
+end
+
+----------------------------------------------------------------------
+-- Loot equity: cross-reference items received with raid attendance so
+-- officers can spot who is dry (high attendance, few items) vs over-fed
+-- (low attendance, many items). One row per member with loot or raids.
+-- Row: { name, key, class, online, items, attendance, raids, perRaid }
+----------------------------------------------------------------------
+function LootTracker:GetGuildLootEquity()
+    local rows = {}
+    local RT = EVRFeatures.RaidTracker
+    local n = GetNumGuildMembers() or 0
+    for i = 1, n do
+        local name, _, _, _, _, _, _, _, isOnline, _, classFile = GetGuildRosterInfo(i)
+        if name then
+            local short = name:match("^([^-]+)") or name
+            local realm = name:match("-(.+)$") or GetRealmName()
+            local key = EVRFeatures:GetPlayerKey(short, realm)
+            local items = self:GetLootCount(key)
+            local att, raids = 0, 0
+            if RT then
+                -- One core for both figures: the one with the most nights that count (#134).
+                local core = RT:GetPlayerGroup(key, "raids25")
+                att = RT:GetAttendance25ManPercent(key, core) or 0
+                local a = RT:GetAttendance(key, core)
+                raids = (a and a.raids25) or 0
+            end
+            if items > 0 or raids > 0 then
+                rows[#rows + 1] = {
+                    name = short, key = key, class = classFile or "", online = isOnline,
+                    items = items, attendance = att, raids = raids,
+                    perRaid = raids > 0 and (items / raids) or 0,
+                }
+            end
+        end
+    end
+    table.sort(rows, function(a, b)
+        if a.items ~= b.items then return a.items > b.items end
+        return a.attendance > b.attendance
+    end)
+    return rows
+end

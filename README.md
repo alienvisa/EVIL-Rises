@@ -1,35 +1,30 @@
 # EVIL Rises
 
-A World of Warcraft: Forever addon for **EVIL: Every Villian Is Lemons**.
+**EVIL Rises is the guild addon for EVIL: Every Villian Is Lemons on World of Warcraft: Forever.** Open your usual guild window or type `/evil` to see who's online, find a crafter, plan a raid, or put a price on an enemy's head.
 
-The [EVIL Rises theme guide](THEME.md) records the approved Classic styling for future updates.
+## Inside the guild window
 
-## Install and try it
+| Tab | What you can do |
+| --- | --- |
+| **Roster** | Search for a guildmate and sort by level, class, profession, zone, or last seen. Click a name for notes and linked alts, or inspect a nearby guildmate's gear. |
+| **Guild** | Find raid sessions and attendance under **Raids**, and wishlists, loot history, and standings under **Loot**. Use the calendar, bulletin, and polls to plan the next guild run. |
+| **Professions** | Look up a recipe, find a guildmate who can make it, and place a craft order. |
+| **Bounty** | Post a target, choose their faction, set a reward in gold, silver, and copper, and tell the guild why. Right-click a player and choose **Create bounty** to fill in their details. You can withdraw your own posts. |
+| **Alliances** | Manage guild pacts and keep up with allied guilds through bulletins and chat. |
+| **Recruitment** | Find recruits and track how new members are doing during their trials. |
+| **Leadership** | Review officer notes, manage ranks, and check the guild audit log. Access follows guild permissions. |
+| **Settings** | Adjust your interface, alerts, and enabled features. Choose **Open debug window** if you want to capture a log for a bug report. |
 
-1. Copy the `EVILRises` folder into `World of Warcraft/_forever_/Interface/AddOns/`.
-2. Start Forever and enable **EVIL Rises** in the AddOns list.
-3. Open EVIL Rises with your guild keybind, the guild micro-menu button, `/evil`, or `/evilrises`. While the addon is enabled, it replaces the guild view for guild members.
-4. Drag the tabs to reorder them. The guild name stays at the left. **Settings** can restore the default order.
-   Drag the window's bottom-right corner to resize it. The padlock beside the close button locks resizing. The window remembers both its size and lock state.
-5. Click a roster header to sort and click it again to reverse the order. The icon headers sort by status, class, and guild rank. A gold crown marks the guild master and a silver crown marks the second rank or a rank named Officer.
-6. Click a member's name for notes, profession details, and linked characters. Enter another roster name or `Name-Realm` to link that character as an alt. The order, login setting, and alt links are saved on the account. Alt links are scoped to the guild.
+## Install and open
 
-Race and professions appear when the client supplies member data. Officer notes follow Blizzard's guild permissions. The member details can show your own gear or inspect a nearby, eligible guildmate. Raid attendance and loot history have display slots for future tracking. **Roster** and **Settings** are active in this build.
+1. Exit the game. From the addon ZIP or a download of this repository, copy the **EVILRises** folder into `World of Warcraft/_forever_/Interface/AddOns/`. The file `EVILRises.toc` should sit directly inside `AddOns/EVILRises/`.
+2. Start WoW Forever and enable **EVIL Rises** in the AddOns list.
+3. Use the guild keybind, the guild menu button, or `/evil`. The guild message of the day appears across the top.
 
-If a Forever update flags the addon as out of date, compare the TOC's Interface number with the fourth value printed by `/dump select(4, GetBuildInfo())`. The initial target is Forever 1.60.1 (Interface 16001).
+Drag the tabs into the order you like. Drag the bottom-right corner to resize the window, then click the padlock beside the close button to lock its size.
 
-## Build and distribute
+## Staying in sync
 
-From the repository root in PowerShell:
+EVIL Rises quietly checks for updates at login, every 60 seconds, and whenever you open the guild window. Online guildmates running the addon exchange updates automatically. If you miss a bounty while offline, your board can catch up when its author is back online.
 
-```powershell
-./scripts/Build-Package.ps1
-```
-
-The script creates `dist/EVILRises-<version>-forever.zip` from the version in `EVILRises/EVILRises.toc`. The archive opens directly to the `EVILRises/` folder, which contains `EVILRises.toc`, the Lua files, and `Textures/`.
-
-- **CurseForge** — Upload the ZIP to the EVIL Rises project and select the matching Forever game version.
-- **WowUp Hub** - Attach the generated ZIP as a release asset on a public distribution repository. Keep the `-forever.zip` suffix for WowUp's GitHub Install from URL flow. The Hub accepts the single `EVILRises.toc` in this Forever-only build. Add the GitHub topic `guild` to categorize the listing and put any screenshots in `.previews/` on the tagged branch.
-- **WowUp with CurseForge** - Players can use the CurseForge listing, subject to the project's third-party distribution settings.
-
-[CurseForge upload guide](https://support.curseforge.com/support/solutions/articles/9000197242-file-types-and-additional-fields), [WowUp Hub guide](https://wowup.io/guide/wowup/hub), and [WowUp Install from URL guide](https://wowup.io/guide/get-addons/overview)
+*Stay ticklin and stay evil.*

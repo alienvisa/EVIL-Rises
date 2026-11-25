@@ -1,0 +1,338 @@
+----------------------------------------------------------------------
+-- EVIL Rises - Roster Log (guild audit trail)
+-- Captures join/leave/kick/promote/demote (with actor) from system
+-- messages; synced officer-authoritative (domain "audit"); absorbs the
+-- old GuildManager action log. Cold-login backfill is a tracked follow-up.
+----------------------------------------------------------------------
+local RosterLog = {}
+EVRFeatures.RosterLog = RosterLog
+
+local CAP = 1000        -- the guild's events: what the game's messages say and what officers sync
+local LOCAL_CAP = 500   -- this client's own diff lines (`loc`: a level, a note, a return): a quota of their own
+local MAX_AGE = 90 * 86400
+local BACKFILL_N = 25   -- cold-sync re-broadcast is capped to the last N events
+local NEAR_DUP = 30     -- seconds within which the same change, seen twice, is one event
+local NEAR_DUP_SCAN = 20  -- how many of the latest events that check looks back over
+RosterLog.CAP, RosterLog.LOCAL_CAP, RosterLog.BACKFILL_N = CAP, LOCAL_CAP, BACKFILL_N
+
+function RosterLog:Initialize()
+    EVRFeatures.db.rosterLog = EVRFeatures.db.rosterLog or { events = {} }
+    EVRFeatures.db.rosterLog.events = EVRFeatures.db.rosterLog.events or {}
+    if EVRFeatures.SyncService then
+        EVRFeatures.SyncService:On("audit", function(env) RosterLog:OnSync(env) end)
+    end
+    self:_MigrateManagementLog()
+    self:_SetupDetection()
+    self:Prune()
+    self:_RegisterTests()
+end
+
+----------------------------------------------------------------------
+-- Pure helpers (deterministic; unit-tested via /eviltools selftest)
+----------------------------------------------------------------------
+-- Who an event is about: the short name, except on retail, where a guild spans connected realms
+-- and two members can share a name: there it is the whole key, a name without a realm on this
+-- client's. Officers on different realms then file the same event under the same id (issue #184).
+function RosterLog:_NormShort(name)
+    if not name or name == "" then return name end
+    if EVRFeatures.Client and EVRFeatures.Client.isRetail then return EVRFeatures:KeyOfRosterName(name) end
+    return name:match("^([^-]+)") or name
+end
+
+function RosterLog:_EventId(action, target, author, ts)
+    local bucket = math.floor((ts or 0) / 5)
+    return string.format("%s|%s|%s|%d", tostring(action), tostring(target or ""),
+        tostring(author or ""), bucket)
+end
+
+-- Each message read through EVRFeatures:MatchFormat, which takes "%s" and German's numbered
+-- "%1$s" alike and hands the arguments back by number, whatever order the language says
+-- them in (#160).
+function RosterLog:_ParseSystem(msg)
+    if not msg then return nil end
+    msg = strtrim(msg)
+    -- join: ERR_GUILD_JOIN_S = "%s has joined the guild."
+    local a = EVRFeatures:MatchFormat(msg, ERR_GUILD_JOIN_S)
+    if a and a[1] then return { action = "join", target = self:_NormShort(a[1]) } end
+    -- leave: ERR_GUILD_LEAVE_S = "%s has left the guild."
+    a = EVRFeatures:MatchFormat(msg, ERR_GUILD_LEAVE_S)
+    if a and a[1] then return { action = "leave", target = self:_NormShort(a[1]) } end
+    -- kick: ERR_GUILD_REMOVE_SS = "%s has been kicked out of the guild by %s."  (target, actor)
+    a = EVRFeatures:MatchFormat(msg, ERR_GUILD_REMOVE_SS)
+    if a and a[1] and a[2] then
+        return { action = "kick", target = self:_NormShort(a[1]), author = self:_NormShort(a[2]) }
+    end
+    -- promote: ERR_GUILD_PROMOTE_SSS = "%s has promoted %s to %s."  (actor, target, rank)
+    a = EVRFeatures:MatchFormat(msg, ERR_GUILD_PROMOTE_SSS)
+    if a and a[1] and a[2] then
+        return { action = "promote", target = self:_NormShort(a[2]), author = self:_NormShort(a[1]), detail = a[3] }
+    end
+    -- demote: ERR_GUILD_DEMOTE_SSS = "%s has demoted %s to %s."  (actor, target, rank)
+    a = EVRFeatures:MatchFormat(msg, ERR_GUILD_DEMOTE_SSS)
+    if a and a[1] and a[2] then
+        return { action = "demote", target = self:_NormShort(a[2]), author = self:_NormShort(a[1]), detail = a[3] }
+    end
+    return nil
+end
+
+function RosterLog:_Insert(evt, store)
+    store = store or (EVRFeatures.db.rosterLog and EVRFeatures.db.rosterLog.events)
+    if not store or not evt then return false end
+    evt.timestamp = evt.timestamp or GetServerTime()
+    evt.id = evt.id or self:_EventId(evt.action, evt.target, evt.author, evt.timestamp)
+    for i = 1, #store do
+        if store[i].id == evt.id then return false end   -- dedup
+    end
+    -- The same change seen twice a few seconds apart, across a 5s bucket: a bulk action's line (issue #420) and
+    -- the game's guild message about it. Same action, member, officer and rank, within NEAR_DUP seconds. Only an
+    -- officer's change has an author: a join or a leave is never folded into another.
+    for i = #store, math.max(1, #store - NEAR_DUP_SCAN), -1 do
+        local e = store[i]
+        if evt.author ~= nil and e.action == evt.action and e.target == evt.target and e.author == evt.author and e.detail == evt.detail
+            and math.abs((e.timestamp or 0) - evt.timestamp) <= NEAR_DUP then
+            return false
+        end
+    end
+    store[#store + 1] = evt
+    -- Each kind makes room in its own quota: a round of note dates or an evening of level-ups (issue #425)
+    -- never pushes a join or a kick out of the log.
+    local isLoc = evt.loc and true or false
+    local n, cap = 0, isLoc and LOCAL_CAP or CAP
+    for i = 1, #store do
+        if (store[i].loc and true or false) == isLoc then n = n + 1 end
+    end
+    local i = 1
+    while n > cap and store[i] do
+        if (store[i].loc and true or false) == isLoc then
+            table.remove(store, i)
+            n = n - 1
+        else
+            i = i + 1
+        end
+    end
+    return true
+end
+
+function RosterLog:Prune(now, store)
+    store = store or (EVRFeatures.db.rosterLog and EVRFeatures.db.rosterLog.events)
+    if not store then return 0 end
+    now = now or GetServerTime()
+    local removed = 0
+    for i = #store, 1, -1 do
+        if (store[i].timestamp or 0) < now - MAX_AGE then
+            table.remove(store, i); removed = removed + 1
+        end
+    end
+    return removed
+end
+
+function RosterLog:GetLog(store)
+    store = store or (EVRFeatures.db.rosterLog and EVRFeatures.db.rosterLog.events) or {}
+    local out = {}
+    for i = #store, 1, -1 do out[#out + 1] = store[i] end
+    return out
+end
+
+-- Tally join/leave/kick events strictly after `since` (a server timestamp).
+-- Used to feed the login digest with audit counts.
+function RosterLog:CountsSince(since, store)
+    store = store or (EVRFeatures.db.rosterLog and EVRFeatures.db.rosterLog.events) or {}
+    local c = { join = 0, leave = 0, kick = 0 }
+    for _, e in ipairs(store) do
+        if (e.timestamp or 0) > (since or 0) and c[e.action] ~= nil then
+            c[e.action] = c[e.action] + 1
+        end
+    end
+    return c
+end
+
+-- Pure: the most recent up-to-N events (chronological order), only those `keep(evt)` accepts when
+-- given. Bounds the cold-sync backfill so a late officer converges on the tail of the log
+-- instead of us re-broadcasting the whole history every login.
+function RosterLog:_Recent(store, n, keep)
+    store = store or (EVRFeatures.db.rosterLog and EVRFeatures.db.rosterLog.events) or {}
+    n = n or BACKFILL_N
+    local out = {}
+    for i = #store, 1, -1 do
+        if #out >= n then break end
+        if not keep or keep(store[i]) then table.insert(out, 1, store[i]) end
+    end
+    return out
+end
+
+local function synced(evt) return not evt.loc end
+
+function RosterLog:_MigrateManagementLog()
+    if EVRFeatures.db.rosterLog.migrated then return end
+    EVRFeatures.db.rosterLog.migrated = true
+    local old = EVRFeatures.db.managementLog
+    if type(old) == "table" then
+        for _, e in ipairs(old) do
+            self:_Insert({
+                action = e.action, target = e.target, author = e.author,
+                detail = e.detail, timestamp = e.timestamp,
+            })
+        end
+    end
+end
+
+function RosterLog:Clear()
+    if not EVRFeatures:IsOfficer() then return end
+    EVRFeatures.db.rosterLog.events = {}
+    self:Refresh()
+end
+
+function RosterLog:OnSync(env)
+    if env.act == "add" and env.data and env.data.evt then
+        if self:_Insert(env.data.evt) then
+            self:_ToHistory(env.data.evt)
+            self:Refresh()
+        end
+    elseif env.act == "hist" and EVRFeatures.MemberHistory then
+        -- A member's passage from another officer's roster diff (issue #425); a client before it ignores the act.
+        EVRFeatures.MemberHistory:OnSync(env.data)
+    end
+end
+
+-- Every event taken, into the member's durable history (issue #425): officers only, MemberHistory checks.
+function RosterLog:_ToHistory(evt)
+    if EVRFeatures.MemberHistory then EVRFeatures:SafeCall(EVRFeatures.MemberHistory.FromAudit, EVRFeatures.MemberHistory, evt) end
+end
+
+----------------------------------------------------------------------
+-- Recording + detection
+----------------------------------------------------------------------
+function RosterLog:Add(evt)
+    local inserted = self:_Insert(evt)
+    if inserted then
+        self:_ToHistory(evt)
+        self:_Publish(evt)     -- broadcasts to officers if we are one; no-op for members
+        self:Refresh()
+    end
+    return inserted
+end
+
+function RosterLog:Record(action, target, author, detail)
+    return self:Add({
+        action = action, target = target and self:_NormShort(target) or nil,
+        author = author and self:_NormShort(author) or nil, detail = detail,
+        timestamp = GetServerTime(),
+    })
+end
+
+function RosterLog:Refresh()
+    if self.uiRefresh then EVRFeatures:SafeCall(self.uiRefresh) end
+end
+
+function RosterLog:_SetupDetection()
+    self._ready = false
+    EVRFeatures.Compat.After(8, function() RosterLog._ready = true end)
+    local f = CreateFrame("Frame")
+    EVRFeatures.Compat.RegisterEvent(f, "CHAT_MSG_SYSTEM")
+    f:SetScript("OnEvent", function(_, _, msg)
+        if EVRFeatures.Compat.IsSecret(msg) then return end  -- chat in lockdown: nothing readable
+        if not RosterLog._ready then return end
+        local evt = RosterLog:_ParseSystem(msg)
+        -- Somebody the history says was a member before (issue #425): the log files it as a rejoin, still a
+        -- "join" with the mark (the id, and every client before it, stay the same), and the officer is told.
+        local past = evt and evt.action == "join" and EVRFeatures.MemberHistory and EVRFeatures:IsOfficer()
+            and EVRFeatures.MemberHistory:Describe(evt.target)
+        if past then evt.rejoin = true end
+        if evt then RosterLog:Add(evt) end
+        if past then EVRFeatures.MemberHistory:Say(past) end
+        -- With the guild's switch for new members on, an officer's client asks for a fresh roster: the
+        -- trial starts from the roster line, never from this one's name (#249).
+        if evt and evt.action == "join" and EVRFeatures.TrialTracker then
+            EVRFeatures:SafeCall(EVRFeatures.TrialTracker.OnJoin, EVRFeatures.TrialTracker, evt.target)
+        end
+        -- And whoever leaves or is removed leaves the roster it compares against: back, they are new.
+        if evt and (evt.action == "leave" or evt.action == "kick") and EVRFeatures.TrialTracker then
+            EVRFeatures:SafeCall(EVRFeatures.TrialTracker.OnLeave, EVRFeatures.TrialTracker, evt.target)
+        end
+        -- Somebody with alts removed by this client's character, or a main who left (#426): only asked about.
+        local AD = EVRFeatures.AltDeparture
+        if evt and AD and evt.action == "kick" then
+            EVRFeatures:SafeCall(AD.OnKick, AD, evt)
+        elseif evt and AD and evt.action == "leave" then
+            EVRFeatures:SafeCall(AD.OnLeave, AD, evt)
+        end
+    end)
+end
+
+function RosterLog:_Publish(evt)
+    if not EVRFeatures.SyncService or not EVRFeatures:IsOfficer() then return end
+    -- broadcast; convergence is by id-dedup on receipt (no rev, no ACK).
+    EVRFeatures.SyncService:Publish("audit", "add", { evt = evt })
+end
+
+-- Cold-sync backfill: re-broadcast the last BACKFILL_N audit events so an
+-- officer offline when they were recorded fills the tail of the log on login.
+-- The audit domain is append-only and id-deduped (no revision), so this is
+-- idempotent: _Insert drops an event a peer already holds and inserts one it
+-- missed. No revision is involved and none is bumped. Bounded by _Recent to
+-- avoid dumping unbounded history. Officers only. Called from HandleRequest.
+function RosterLog:Backfill()
+    if not EVRFeatures.SyncService or not EVRFeatures:IsOfficer() then return end
+    -- A line of this client's own roster diff (issue #425) stays here: every officer's client sees
+    -- the same change, and a note's text is not for the guild channel. Left out before the last
+    -- BACKFILL_N are picked, so a run of them never leaves the backfill with nothing to send.
+    local recent = self:_Recent(nil, nil, synced)
+    for i = 1, #recent do self:_Publish(recent[i]) end
+    if EVRFeatures.MemberHistory then EVRFeatures.MemberHistory:Backfill() end
+end
+
+----------------------------------------------------------------------
+-- Self-tests
+----------------------------------------------------------------------
+function RosterLog:_RegisterTests()
+    if not EVRFeatures.SelfTest then return end
+    local S = EVRFeatures.SelfTest
+    -- The names as this client files them: with the realm on retail (#184).
+    local grefer, daniel = RosterLog:_NormShort("Grefer"), RosterLog:_NormShort("Daniel")
+    S:Register("rosterlog.parse_join", function()
+        local e = RosterLog:_ParseSystem("Grefer has joined the guild.")
+        if not e or e.action ~= "join" or e.target ~= grefer then return false, "join" end
+        return true
+    end)
+    S:Register("rosterlog.parse_kick", function()
+        local e = RosterLog:_ParseSystem("Grefer has been kicked out of the guild by Daniel.")
+        if not e or e.action ~= "kick" or e.target ~= grefer or e.author ~= daniel then return false, "kick" end
+        return true
+    end)
+    S:Register("rosterlog.parse_promote", function()
+        local e = RosterLog:_ParseSystem("Daniel has promoted Grefer to Officer.")
+        if not e or e.action ~= "promote" or e.target ~= grefer or e.author ~= daniel then return false, "promote" end
+        return true
+    end)
+    S:Register("rosterlog.dedup", function()
+        local store = {}
+        local a = RosterLog:_Insert({ action = "join", target = "X", timestamp = 100 }, store)
+        local b = RosterLog:_Insert({ action = "join", target = "X", timestamp = 101 }, store)  -- same 5s bucket
+        if not a or b or #store ~= 1 then return false, "dedup" end
+        return true
+    end)
+    S:Register("rosterlog.prune", function()
+        local store = { { action = "join", target = "Y", timestamp = 1, id = "y" } }
+        local n = RosterLog:Prune(1 + MAX_AGE + 1, store)
+        if n ~= 1 or #store ~= 0 then return false, "prune" end
+        return true
+    end)
+    S:Register("rosterlog.counts", function()
+        local store = { { action="join", timestamp=10 }, { action="kick", timestamp=20 }, { action="join", timestamp=5 } }
+        local c = RosterLog:CountsSince(8, store)
+        if c.join ~= 1 or c.kick ~= 1 then return false, "counts" end
+        return true
+    end)
+    S:Register("rosterlog.recent_window", function()
+        local store = {}
+        for i = 1, 5 do store[i] = { action = "join", target = "P" .. i, timestamp = i, id = "e" .. i } end
+        local out = RosterLog:_Recent(store, 3)
+        if #out ~= 3 or out[1].id ~= "e3" or out[3].id ~= "e5" then
+            return false, "should return the last 3 in order"
+        end
+        local few = RosterLog:_Recent({ { id = "z" } }, 3)
+        if #few ~= 1 or few[1].id ~= "z" then return false, "fewer than N returns all" end
+        if #RosterLog:_Recent({}, 3) ~= 0 then return false, "empty store" end
+        return true
+    end)
+end

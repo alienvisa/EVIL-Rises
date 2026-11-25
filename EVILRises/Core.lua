@@ -45,6 +45,6 @@ SlashCmdList.EVILRISES = function(message)
     elseif command == "version" then
         printMessage("v" .. addon.version)
     else
-        printMessage("/evil opens EVIL Rises. /evil version shows the installed version.")
+        printMessage("/evil opens the guild panel. /evil version shows the installed version.")
     end
 end

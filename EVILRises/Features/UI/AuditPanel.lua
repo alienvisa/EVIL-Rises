@@ -1,0 +1,853 @@
+----------------------------------------------------------------------
+-- EVIL Rises - Audit Panel (guild readiness)
+-- "Auditoria" tab with sub-tabs: Attunement progression grid and the
+-- guild-wide enchant audit. Visual layout only — data comes from
+-- EVRFeatures.AttunementTracker and EVRFeatures.GearAudit (Rule 3 / Rule 10).
+----------------------------------------------------------------------
+local UI = EVRFeatures.UI
+local C = EVRFeatures.Colors
+local L = EVRFeatures.L
+local WHITE = "Interface\\Buttons\\WHITE8x8"
+
+local SUBTABS = {
+    { key = "ready",   label = L["Readiness"] },
+    { key = "attune",  label = L["Attunements"], tbc = true },  -- TBC content (ADR-0014)
+    { key = "resist",  label = L["Resistances"], tbc = true },  -- targets are TBC fights
+    { key = "enchant", label = L["Enchants"] },
+    { key = "sync",    label = L["Sync"] },
+}
+
+local ROW_H = 24
+local NAME_W = 170
+local COL_W = 92
+-- The screen's margins (#371): flush with the sub-tab bar's left edge, GAP under it, the content ending
+-- GAP short of the right edge. A scroll child stops UI.SCROLL_GUTTER short of its frame, so a scroll
+-- frame's right edge sits SCROLL_R from the panel's.
+local GAP = UI.GAP
+local SCROLL_R = UI.SCROLL_GUTTER - UI.GAP
+local HEAD_ABOVE = 20   -- room over a later section title for its rule (UI:CreateSectionTitle)
+local HEAD_H = 26       -- a section title's line and the space under it
+local LINE_H = 16       -- a line of secondary text
+
+-- A status word in its status colour, from the palette's tokens (#371: they were hex codes).
+local function tint(text, col) return EVRFeatures:ColorText(text, col.r, col.g, col.b) end
+local DASH = "\226\128\147"   -- en dash: no data
+
+-- Ready-check icons render reliably inside FontStrings (no font-glyph risk).
+local ICON_DONE = "|TInterface\\RAIDFRAME\\ReadyCheck-Ready:14:14|t"
+local ICON_NONE = "|TInterface\\RAIDFRAME\\ReadyCheck-NotReady:14:14|t"
+
+----------------------------------------------------------------------
+-- Shared builders
+----------------------------------------------------------------------
+-- The shared scroll frame (#371), anchored here: its child keeps the frame's width less the gutter,
+-- so it ends GAP short of the panel's right edge with the scroll bar past it.
+local function MakeScrollList(panel, name, topInset)
+    local scroll, content = UI:CreateScrollFrame(panel, name)
+    scroll:SetPoint("TOPLEFT", 0, -(topInset or 0))
+    scroll:SetPoint("BOTTOMRIGHT", SCROLL_R, 0)
+    UI:BindScrollChildWidth(scroll, content)
+    return scroll, content
+end
+
+-- A row hung by both top corners: a width read at refresh time is 0 on a hidden tab (#371).
+local function MakeRow(content, yOff, index)
+    local row = CreateFrame("Frame", nil, content, "BackdropTemplate")
+    row:SetHeight(ROW_H)
+    row:SetPoint("TOPLEFT", 0, -yOff)
+    row:SetPoint("TOPRIGHT", 0, -yOff)
+    row:SetBackdrop({ bgFile = WHITE })
+    local alt = (index % 2 == 0) and C.row1 or C.row2
+    row:SetBackdropColor(alt.r, alt.g, alt.b, alt.a)
+    return row
+end
+
+-- What a refresh drew goes before the next one: the rows, and the lines and titles drawn straight on
+-- the content (they stayed on, under the next drawing).
+local function ClearContent(content)
+    for _, child in pairs({ content:GetChildren() }) do child:Hide() end
+    for _, region in pairs({ content:GetRegions() }) do region:Hide() end
+end
+
+-- A table's header row: the shared one, no fill and a 1px rule under it (#371).
+local function MakeHeader(panel, top, height)
+    local header = UI:CreateTableHeader(panel, height)
+    header:SetPoint("TOPLEFT", 0, -top)
+    header:SetPoint("TOPRIGHT", -GAP, -top)
+    return header
+end
+
+-- A section title on a list (#371): the list's first has no rule; a later one leaves HEAD_ABOVE over
+-- itself for it. Returns the y under it.
+local function SectionTitle(content, text, yOff)
+    local first = yOff == 0
+    if not first then yOff = yOff + HEAD_ABOVE end
+    local t = UI:CreateSectionTitle(content, text, first)
+    t:SetPoint("TOPLEFT", 0, -yOff)
+    return yOff + HEAD_H
+end
+
+----------------------------------------------------------------------
+-- READINESS sub-panel — "is the raid ready?" one-screen rollup
+-- Aggregates attunement + enchants + iLvl + (in-raid) consumables.
+----------------------------------------------------------------------
+local function BuildReadySub(panel)
+    panel.targetIdx = 0   -- 0 = all raids; 1..N = a specific attunement raid
+    -- The attunement target is TBC's (ADR-0014) and the consumables column the checker's, on
+    -- Anniversary and retail (issue #187): where the game has neither, there is nothing to cycle
+    -- through or to count (issue #184).
+    local hasAttune, hasCons = EVRFeatures.AttunementTracker ~= nil, EVRFeatures.ConsumableChecker ~= nil
+    -- WoW: Forever has no attunements: its column is the level, the door to a raid (issue #207).
+    local forever = not EVRFeatures.Client.isAnniversary and not EVRFeatures.Client.isRetail
+    panel.statusIdx = 0   -- 0 = every status; 1..N = one of them (issue #220)
+    local STATUSES = { { "ready", L["ready"] }, { "warn", L["check"] }, { "notready", L["not ready"] } }
+
+    local summary = UI:CreateText(panel, "", 11, C.text.r, C.text.g, C.text.b)
+    summary:SetPoint("TOPLEFT", 0, -4)
+
+    local targetBtn
+    if hasAttune then
+        targetBtn = UI:CreateButton(panel, L["Target: All raids"], 220, 20)
+        targetBtn:SetPoint("TOPRIGHT", -GAP, -2)
+    end
+
+    -- /eviltools specs: the group's talent specs, read now (#142).
+    local specsBtn = UI:CreateButton(panel, L["Scan group talents"], 150, 20)
+    if targetBtn then
+        specsBtn:SetPoint("TOPRIGHT", targetBtn, "TOPLEFT", -6, 0)
+    else
+        specsBtn:SetPoint("TOPRIGHT", -GAP, -2)
+    end
+    specsBtn:SetScript("OnClick", function()
+        if EVRFeatures.SpecChecker then EVRFeatures.SpecChecker:ScanGroup() end
+    end)
+    -- /eviltools cons: the raid's consumables, read now, with the announce (on retail the Raid HUD that
+    -- holds the other way in does not exist; issue #187).
+    local leftmost = specsBtn
+    if hasCons then
+        local consBtn = UI:CreateButton(panel, L["Check Consumables"], 150, 20)
+        consBtn:SetPoint("TOPRIGHT", specsBtn, "TOPLEFT", -6, 0)
+        consBtn:SetScript("OnClick", function() EVRFeatures:ShowConsumablePopup() end)
+        leftmost = consBtn
+    end
+    -- Forever's filters: a core and a status, each cycled like the target above (issue #220).
+    local coreBtn, statusBtn
+    if forever then
+        statusBtn = UI:CreateButton(panel, L["Status: All"], 120, 20)
+        statusBtn:SetPoint("TOPRIGHT", leftmost, "TOPLEFT", -6, 0)
+        coreBtn = UI:CreateButton(panel, L["Core: All"], 130, 20)
+        coreBtn:SetPoint("TOPRIGHT", statusBtn, "TOPLEFT", -6, 0)
+        leftmost = coreBtn
+    end
+    -- A narrow window cuts the summary short rather than lay the buttons over it.
+    summary:SetPoint("TOPRIGHT", leftmost, "TOPLEFT", -8, -2)
+    summary:SetWordWrap(false)
+    summary:SetJustifyH("LEFT")
+
+    local header = MakeHeader(panel, 26)
+    local function hcol(txt, x)
+        local fs = UI:CreateHeaderText(header, txt, 9)
+        fs:SetPoint("LEFT", x, 0)
+    end
+    hcol(L["MEMBER"], 8)
+    hcol(L["STATUS"], 160)
+    hcol(L["iLVL"], 250)
+    if hasAttune then hcol(L["ATTUNE"], 310) end
+    if forever then hcol(L["LEVEL"], 310) end
+    hcol(L["ENCHANTS"], 400)
+    if hasCons then hcol(L["CONSUMES"], 510) end
+    if forever then
+        hcol(L["CORE"], 470)
+        hcol(L["ROLE"], 580)
+    end
+
+    local foot = UI:CreateText(panel, "", 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+    foot:SetPoint("BOTTOMLEFT", 0, 2)
+    foot:SetJustifyH("LEFT")
+
+    local listHolder = CreateFrame("Frame", nil, panel)
+    listHolder:SetPoint("TOPLEFT", 0, -48)
+    listHolder:SetPoint("BOTTOMRIGHT", 0, 0)
+    local _, content = MakeScrollList(listHolder, "EVRFeaturesAuditReadyScroll")
+
+    local function refresh()
+        ClearContent(content)
+
+        local targets = EVRFeatures.Readiness:GetTargets()
+        local target = (panel.targetIdx > 0) and targets[panel.targetIdx] or nil
+        local targetShort = target and target.short or nil
+        if targetBtn then targetBtn.label:SetText(target and (L["Target: "] .. target.short) or L["Target: All raids"]) end
+
+        local rows = EVRFeatures.Readiness:GetReport(targetShort)
+        local c = EVRFeatures.Readiness:Summarize(rows)
+        summary:SetText(string.format(L["%d ready  |  %d need attention  |  %d not ready"],
+            c.ready, c.warn, c.notready))
+
+        if forever then
+            local names = EVRFeatures.CoreManager and EVRFeatures.CoreManager:GetSortedNames() or {}
+            if panel.coreIdx > #names then panel.coreIdx = 0 end
+            panel.coreName = names[panel.coreIdx]
+            local status = STATUSES[panel.statusIdx]
+            coreBtn.label:SetText(panel.coreName and (L["Core: "] .. panel.coreName) or L["Core: All"])
+            statusBtn.label:SetText(status and (L["Status: "] .. status[2]) or L["Status: All"])
+
+            EVRFeatures.Readiness:WithSeats(rows)
+            -- The footer reads the whole guild: a status filter hides rows, not what a core has.
+            local lines = {}
+            for _, x in ipairs(EVRFeatures.Readiness:Compositions(rows, panel.coreName)) do
+                lines[#lines + 1] = string.format(L["%s: tanks %d/%d  |  healers %d/%d  |  dps %d/%d"],
+                    x.core, x.tanks, x.wantTanks, x.healers, x.wantHealers, x.dps, x.wantDps)
+            end
+            foot:SetText(table.concat(lines, "\n"))
+            listHolder:SetPoint("BOTTOMRIGHT", 0, #lines > 0 and #lines * 14 + 6 or 0)
+            rows = EVRFeatures.Readiness.Filtered(rows, panel.coreName, status and status[1] or nil)
+        end
+
+        local yOff = 0
+        for idx, r in ipairs(rows) do
+            local row = MakeRow(content, yOff, idx)
+            local cr, cg, cb = EVRFeatures:GetClassColor(r.class)
+            local nameFS = UI:CreateText(row, r.name, 11, cr, cg, cb)
+            nameFS:SetPoint("LEFT", 8, 0)
+            if r.status == "nodata" then nameFS:SetTextColor(C.labelDim.r, C.labelDim.g, C.labelDim.b) end
+
+            local stFS = UI:CreateText(row, "", 11, C.text.r, C.text.g, C.text.b)
+            stFS:SetPoint("LEFT", 160, 0)
+            if r.status == "ready" then
+                stFS:SetText(ICON_DONE .. " " .. tint(L["ready"], C.ok))
+            elseif r.status == "notready" and r.reason == "level" then
+                stFS:SetText(ICON_NONE .. " " .. tint(L["Level"] .. " " .. (r.level or 0), C.danger))
+            elseif r.status == "notready" then
+                stFS:SetText(ICON_NONE .. " " .. tint(L["not attuned"], C.danger))
+            elseif r.status == "warn" then
+                stFS:SetText(tint("! " .. L["check"], C.warn))
+            else
+                stFS:SetText(tint(DASH, C.labelDim))
+            end
+
+            -- A 60 with no addon data is ready by level only, said where its item level would be (#207).
+            local ilvlFS = UI:CreateText(row, r.levelOnly and L["level only"] or r.ilvl > 0 and tostring(r.ilvl) or "\226\128\148",
+                11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            ilvlFS:SetPoint("LEFT", 250, 0)
+            ilvlFS:SetWidth(56); ilvlFS:SetWordWrap(false); ilvlFS:SetJustifyH("LEFT")
+
+            if forever then
+                local lvlFS = UI:CreateText(row, tostring(r.level or 0), 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+                lvlFS:SetPoint("LEFT", 310, 0)
+            end
+            if hasAttune then
+                -- In progress reads as warn: gold is not a status (#371).
+                local attColor = (r.attTotal > 0 and r.attDone == r.attTotal) and C.ok or C.warn
+                if r.targetOk == false then attColor = C.danger elseif r.targetOk == true then attColor = C.ok end
+                local attTxt = r.attTotal > 0 and (r.attDone .. "/" .. r.attTotal) or "\226\128\148"
+                local attFS = UI:CreateText(row, attTxt, 11, attColor.r, attColor.g, attColor.b)
+                attFS:SetPoint("LEFT", 310, 0)
+            end
+
+            local enchTxt, ec
+            if not r.hasGear then enchTxt, ec = "\226\128\148", C.label
+            elseif r.missEnch > 0 then enchTxt, ec = string.format(L["%d missing"], r.missEnch), C.danger
+            else enchTxt, ec = "OK", C.ok end
+            local enchFS = UI:CreateText(row, enchTxt, 11, ec.r, ec.g, ec.b)
+            enchFS:SetPoint("LEFT", 400, 0)
+
+            if forever then
+                -- The seat in the chosen core, or the first, with how many more.
+                local seat = r.seats[1]
+                for _, s in ipairs(r.seats) do
+                    if s.core == panel.coreName then seat = s end
+                end
+                local more = (#r.seats > 1 and not panel.coreName) and (" +" .. (#r.seats - 1)) or ""
+                local coreFS = UI:CreateText(row, seat and (seat.core .. more) or "\226\128\148", 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+                coreFS:SetPoint("LEFT", 470, 0)
+                coreFS:SetWidth(104); coreFS:SetWordWrap(false); coreFS:SetJustifyH("LEFT")
+                local rc = (seat and seat.main) and C.textSoft or C.label
+                local roleName = seat and EVRFeatures.CoreManager.ROLE_LABELS[seat.role]
+                local roleFS = UI:CreateText(row, roleName or "\226\128\148", 11, rc.r, rc.g, rc.b)
+                roleFS:SetPoint("LEFT", 580, 0)
+            end
+
+            if hasCons then
+                local consTxt, cc
+                if r.missCons == nil then consTxt, cc = "\226\128\148", C.label
+                elseif r.missCons > 0 then consTxt, cc = string.format(L["%d missing"], r.missCons), C.danger
+                else consTxt, cc = "OK", C.ok end
+                local consFS = UI:CreateText(row, consTxt, 11, cc.r, cc.g, cc.b)
+                consFS:SetPoint("LEFT", 510, 0)
+            end
+
+            yOff = yOff + ROW_H + 2
+        end
+
+        if #rows == 0 then
+            local empty = UI:CreateText(content, L["No roster data yet."], 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            empty:SetPoint("TOPLEFT", 8, -4)
+        end
+        content:SetHeight(math.max(1, yOff))
+    end
+
+    if forever then
+        panel.coreIdx = 0
+        coreBtn:SetScript("OnClick", function()
+            panel.coreIdx = panel.coreIdx + 1
+            refresh()
+        end)
+        statusBtn:SetScript("OnClick", function()
+            panel.statusIdx = (panel.statusIdx + 1) % (#STATUSES + 1)
+            refresh()
+        end)
+    end
+
+    if targetBtn then
+        targetBtn:SetScript("OnClick", function()
+            local targets = EVRFeatures.Readiness:GetTargets()
+            panel.targetIdx = panel.targetIdx + 1
+            if panel.targetIdx > #targets then panel.targetIdx = 0 end
+            refresh()
+        end)
+    end
+
+    return refresh
+end
+
+----------------------------------------------------------------------
+-- ATTUNEMENTS sub-panel — guild progression grid
+----------------------------------------------------------------------
+local function BuildAttuneSub(panel)
+    local legend = UI:CreateText(panel,
+        ICON_DONE .. " " .. L["attuned"] .. "    " .. ICON_NONE .. " " .. L["not started"]
+        .. "    " .. tint("x/y", C.warn) .. " " .. L["in progress"] .. "    " .. tint(DASH, C.labelDim) .. " " .. L["no data"],
+        11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+    legend:SetPoint("TOPLEFT", 0, -2)
+
+    -- Column header (fixed, above the scroll): two lines, the raid and how many have it.
+    local header = MakeHeader(panel, 22, 30)
+    panel.headerCells = {}
+    local hName = UI:CreateHeaderText(header, L["MEMBER"], 10)
+    hName:SetPoint("LEFT", 8, 6)
+
+    local listHolder = CreateFrame("Frame", nil, panel)
+    listHolder:SetPoint("TOPLEFT", 0, -52)
+    listHolder:SetPoint("BOTTOMRIGHT", 0, 0)
+    local _, content = MakeScrollList(listHolder, "EVRFeaturesAuditAttuneScroll")
+
+    return function()
+        ClearContent(content)
+        for _, fs in ipairs(panel.headerCells) do fs:Hide() end
+
+        local cols, rows = EVRFeatures.AttunementTracker:GetGuildMatrix()
+
+        -- Header column labels + per-column attuned counts
+        local totalsWithData = 0
+        for _, r in ipairs(rows) do if r.hasData then totalsWithData = totalsWithData + 1 end end
+        for ci, col in ipairs(cols) do
+            local x = NAME_W + (ci - 1) * COL_W
+            local lbl = UI:CreateHeaderText(header, col.short, 10)
+            lbl:SetPoint("LEFT", x, 6)
+            panel.headerCells[#panel.headerCells + 1] = lbl
+            local doneN = 0
+            for _, r in ipairs(rows) do
+                local c = r.cells[col.short]
+                if c and c.complete then doneN = doneN + 1 end
+            end
+            local cnt = UI:CreateText(header, doneN .. "/" .. totalsWithData, 10, C.label.r, C.label.g, C.label.b)
+            cnt:SetPoint("LEFT", x, -8)
+            panel.headerCells[#panel.headerCells + 1] = cnt
+        end
+
+        local yOff = 0
+        for idx, r in ipairs(rows) do
+            local row = MakeRow(content, yOff, idx)
+            local cr, cg, cb = EVRFeatures:GetClassColor(r.class)
+            local nameFS = UI:CreateText(row, r.name, 11, cr, cg, cb)
+            nameFS:SetPoint("LEFT", 8, 0)
+            if not r.hasData then nameFS:SetTextColor(C.labelDim.r, C.labelDim.g, C.labelDim.b) end
+
+            for ci, col in ipairs(cols) do
+                local x = NAME_W + (ci - 1) * COL_W
+                local cell = UI:CreateText(row, "", 11, C.text.r, C.text.g, C.text.b)
+                cell:SetPoint("LEFT", x, 0)
+                local c = r.cells[col.short]
+                if not r.hasData or not c then
+                    cell:SetText(tint(DASH, C.labelDim))
+                elseif c.complete then
+                    cell:SetText(ICON_DONE)
+                elseif (c.progress or 0) > 0 then
+                    cell:SetText(tint(string.format("%d/%d", c.questsDone or 0, c.questsTotal or 0), C.warn))
+                else
+                    cell:SetText(ICON_NONE)
+                end
+            end
+            yOff = yOff + ROW_H + 2
+        end
+
+        if #rows == 0 then
+            local empty = UI:CreateText(content, L["No roster data yet."], 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            empty:SetPoint("TOPLEFT", 8, -4)
+        end
+        content:SetHeight(math.max(1, yOff))
+    end
+end
+
+----------------------------------------------------------------------
+-- RESISTANCES sub-panel — guild resistance-gear grid (member x school)
+-- Shows the max resistance each member can field per school (from gear they
+-- own, bags included), coloured against that school's headline fight.
+----------------------------------------------------------------------
+local function BuildResistSub(panel)
+    local R = EVRFeatures.Resistances
+
+    local legend = UI:CreateText(panel,
+        L["Max resistance each member can equip from owned gear (bags included). Green = a solid set for that fight."],
+        11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+    legend:SetPoint("TOPLEFT", 0, -2)
+
+    -- Column header: MEMBER + one column per school (coloured), fight/target below.
+    local header = MakeHeader(panel, 22, 30)
+    local hName = UI:CreateHeaderText(header, L["MEMBER"], 10)
+    hName:SetPoint("LEFT", 8, 6)
+    for ci, sc in ipairs(R.SCHOOLS) do
+        local x = NAME_W + (ci - 1) * COL_W
+        local lbl = UI:CreateHeaderText(header, sc.label, 10)
+        lbl:SetPoint("LEFT", x, 6)
+        lbl:SetTextColor(sc.r, sc.g, sc.b)
+        local sub = UI:CreateText(header, sc.fight .. " \226\137\165" .. sc.target, 10,
+            C.label.r, C.label.g, C.label.b)
+        sub:SetPoint("LEFT", x, -8)
+    end
+
+    local listHolder = CreateFrame("Frame", nil, panel)
+    listHolder:SetPoint("TOPLEFT", 0, -52)
+    listHolder:SetPoint("BOTTOMRIGHT", 0, 0)
+    local _, content = MakeScrollList(listHolder, "EVRFeaturesAuditResistScroll")
+
+    return function()
+        ClearContent(content)
+
+        local rows = R:GetRows()
+        local yOff = 0
+        for idx, r in ipairs(rows) do
+            local row = MakeRow(content, yOff, idx)
+            local cr, cg, cb = EVRFeatures:GetClassColor(r.class)
+            local nameFS = UI:CreateText(row, r.name, 11, cr, cg, cb)
+            nameFS:SetPoint("LEFT", 8, 0)
+
+            for ci, sc in ipairs(R.SCHOOLS) do
+                local x = NAME_W + (ci - 1) * COL_W
+                local v = (r.res and r.res[sc.key]) or 0
+                local tier = R:Tier(v, sc.target)
+                -- A partial set reads as warn: gold is not a status (#371).
+                local col = C.label
+                if tier == "ready" then col = C.ok
+                elseif tier == "partial" then col = C.warn
+                elseif tier == "low" then col = C.textSoft end
+                local txt = v > 0 and tostring(v) or tint("\226\128\148", C.labelDim)
+                local cell = UI:CreateText(row, txt, 11, col.r, col.g, col.b)
+                cell:SetPoint("LEFT", x, 0)
+            end
+            yOff = yOff + ROW_H + 2
+        end
+
+        if #rows == 0 then
+            local empty = UI:CreateText(content, L["No resistance data synced yet."], 11,
+                C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            empty:SetPoint("TOPLEFT", 8, -4)
+        end
+        content:SetHeight(math.max(1, yOff))
+    end
+end
+
+----------------------------------------------------------------------
+-- ENCHANTS sub-panel — guild enchant audit
+----------------------------------------------------------------------
+local function BuildEnchantSub(panel)
+    local summary = UI:CreateText(panel, "", 11, C.text.r, C.text.g, C.text.b)
+    summary:SetPoint("TOPLEFT", 0, -4)
+
+    local listHolder = CreateFrame("Frame", nil, panel)
+    listHolder:SetPoint("TOPLEFT", 0, -26)
+    listHolder:SetPoint("BOTTOMRIGHT", 0, 0)
+    local _, content = MakeScrollList(listHolder, "EVRFeaturesAuditEnchantScroll")
+
+    return function()
+        ClearContent(content)
+
+        local all = EVRFeatures.GearAudit:GetGuildEnchantAudit()
+        local problems = {}
+        for _, r in ipairs(all) do
+            if r.missingCount > 0 then problems[#problems + 1] = r end
+        end
+        summary:SetText(string.format(L["%d with missing enchants  |  %d scanned"], #problems, #all))
+
+        local yOff = 0
+        for idx, r in ipairs(problems) do
+            local row = MakeRow(content, yOff, idx)
+            local cr, cg, cb = EVRFeatures:GetClassColor(r.class)
+            local nameFS = UI:CreateText(row, r.name, 11, cr, cg, cb)
+            nameFS:SetPoint("LEFT", 8, 0)
+
+            local cntFS = UI:CreateText(row, string.format(L["%d missing"], r.missingCount), 11, C.danger.r, C.danger.g, C.danger.b)
+            cntFS:SetPoint("LEFT", 150, 0)
+
+            -- Up to the row's right edge by anchors: a width read at refresh time is 0 on a hidden tab.
+            local slots = table.concat(r.missing, ", ")
+            local slotsFS = UI:CreateText(row, slots, 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            slotsFS:SetPoint("LEFT", 250, 0)
+            slotsFS:SetPoint("RIGHT", -8, 0)
+            slotsFS:SetJustifyH("LEFT")
+            slotsFS:SetWordWrap(false)
+
+            yOff = yOff + ROW_H + 2
+        end
+
+        if #problems == 0 then
+            -- Everyone enchanted is good news, in ok; no data yet is a plain line.
+            local msg = #all == 0 and L["No gear data synced yet."] or L["Everyone is fully enchanted!"]
+            local col = #all == 0 and C.textSoft or C.ok
+            local empty = UI:CreateText(content, msg, 11, col.r, col.g, col.b)
+            empty:SetPoint("TOPLEFT", 8, -4)
+        end
+        content:SetHeight(math.max(1, yOff))
+    end
+end
+
+----------------------------------------------------------------------
+-- SYNC sub-panel — addon adoption / version / last sync
+----------------------------------------------------------------------
+
+-- The recruitment's numbers as lines of text: EVRNetGossip:Audit() has them and keeps a copy in
+-- EVRFeaturesDB. Whatever it lacks reads as zero, and one that raises shows nothing: the panel never falls
+-- over a counter.
+local function RecruitLines()
+    local gossip = EVRFeatures.EVRNetGossip
+    if EVRFeatures.Client.isAnniversary or not (gossip and gossip.Audit) then return nil end
+    local ok, a = pcall(gossip.Audit, gossip)
+    if not ok or type(a) ~= "table" then return nil end
+    -- A value an old or damaged save holds wrong costs the tab its line, never the tab.
+    local built, lines = pcall(function()
+        local g, r, ch = a.gossip or {}, a.requests or {}, a.channel
+        local d = type(r.dropped) == "table" and r.dropped or {}
+        -- Tried and refused, tried and taken, or never tried (the channel had no number yet): three things.
+        local function sent(v, skipped)
+            if v == nil then return skipped and L["not tried"] or L["no"] end
+            return v and L["yes"] or L["no"]
+        end
+        local function yn(v) return v and L["yes"] or L["no"] end
+        local out = {
+            string.format(L["rounds %d  -  ads in %d, out %d  -  peers %d  -  dropped %d"],
+                g.rounds or 0, g.adsIn or 0, g.adsOut or 0, g.peers or 0, g.dropped or 0),
+            string.format(L["Whisper test: %s"], g.whisper or L["no spelling came back: gossip and requests do not whisper"]),
+            string.format(L["requests: %d open  -  asked %d, delivered %d  -  invites %d, confirmed by the game %d  -  dropped: name %d, guild %d"],
+                r.open or 0, r.asked or 0, r.delivered or 0, r.invites or 0, r.confirmed or 0, d.name or 0, d.guild or 0),
+            string.format(L["Senders refused as officers: %d"], g.officerRefused or 0),
+        }
+        if type(ch) == "table" then
+            local h = type(ch.heard) == "table" and ch.heard or {}
+            out[#out + 1] = string.format(L["Channel probe: command sent %s, timer sent %s  -  heard back: command %s, timer %s"],
+                sent(ch.click, ch.clickSkipped), sent(ch.timer, ch.timerSkipped), yn(h.click), yn(h.timer))
+        else
+            out[#out + 1] = L["Channel probe: not run"]
+        end
+        return out
+    end)
+    if not built then return nil end
+    return lines
+end
+
+local function BuildSyncSub(panel)
+    local summary = UI:CreateText(panel, "", 11, C.text.r, C.text.g, C.text.b)
+    summary:SetPoint("TOPLEFT", 0, -4)
+
+    -- EVRNet mesh observability: realm-wide, cross-addon presence beyond the
+    -- guild-only sync above. Makes the otherwise-invisible mesh auditable.
+    local meshLine = UI:CreateText(panel, "", 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+    meshLine:SetPoint("TOPLEFT", 0, -22)
+
+    local refresh
+
+    local exportBtn = UI:CreateButton(panel, L["Export Roster"], 110, 20)
+    exportBtn:SetPoint("TOPRIGHT", -GAP, -2)
+    exportBtn:SetScript("OnClick", function()
+        EVRFeatures:ShowExportPopup(L["Roster Export"], EVRFeatures:ExportRoster())
+    end)
+
+    -- /eviltools mergeraids: the same night recorded twice becomes one (#142).
+    local mergeBtn = UI:CreateButton(panel, L["Merge duplicate sessions"], 170, 20)
+    mergeBtn:SetPoint("TOPRIGHT", exportBtn, "TOPLEFT", -6, 0)
+    mergeBtn:SetScript("OnClick", function() EVRFeatures:MergeRaidSessions() end)
+    summary:SetPoint("TOPRIGHT", mergeBtn, "TOPLEFT", -8, -4)
+    summary:SetWordWrap(false)
+    summary:SetJustifyH("LEFT")
+
+    local listHolder = CreateFrame("Frame", nil, panel)
+    listHolder:SetPoint("TOPLEFT", 0, -(38 + GAP))
+    listHolder:SetPoint("BOTTOMRIGHT", 0, 0)
+    local _, content = MakeScrollList(listHolder, "EVRFeaturesAuditSyncScroll")
+
+    -- /eviltools probe channel (specs/071-o-recrutamento). Made once; the list clears its children and the
+    -- refresh puts it back under the recruitment lines.
+    local probeBtn = UI:CreateButton(content, L["Probe channel"], 140, 20)
+    probeBtn:SetScript("OnClick", function()
+        if not EVRFeatures.Probe then return end
+        EVRFeatures.Probe:RunChannel()
+        -- The verdict comes CHANNEL_WAIT seconds in; a second later the counters take it up here.
+        C_Timer.After(EVRFeatures.Probe.CHANNEL_WAIT + 1, function() if refresh and panel:IsShown() then refresh() end end)
+    end)
+
+    -- /eviltools perf and /eviltools perf reset (issue #324), made once like the probe's button.
+    local perfPrintBtn = UI:CreateButton(content, L["Print to chat"], 110, 20)
+    perfPrintBtn:SetScript("OnClick", function() EVRFeatures.Perf:Print() end)
+    local perfResetBtn = UI:CreateButton(content, L["Zero the counters"], 130, 20)
+    perfResetBtn:SetScript("OnClick", function()
+        EVRFeatures.Perf:Reset()
+        if refresh then refresh() end
+    end)
+
+    refresh = function()
+        ClearContent(content)
+
+        local rows, withAddon, outdated = EVRFeatures.CommSystem:GetSyncHealth()
+        summary:SetText(string.format(L["%d/%d have EVIL Rises  |  %d outdated"], withAddon, #rows, outdated))
+
+        if EVRFeatures.Mesh then
+            meshLine:SetText(string.format(
+                L["EVRNet mesh: %s  |  %d peers  |  %d on EVIL Rises"],
+                EVRFeatures.Mesh:HealthLine(), EVRFeatures.Mesh:PeerCount(), EVRFeatures.Mesh:PeerCount("evr")))
+        end
+
+        local yOff = 0
+
+        ------------------------------------------------------------------
+        -- EVIL Rises messages this session (issue #312): what the guildmates' broadcasts became, so a
+        -- sync that stores nothing shows where it was lost.
+        ------------------------------------------------------------------
+        local cs = EVRFeatures.CommSystem
+        if cs.SyncCounters then
+            local n = cs:SyncCounters()
+            local line = string.format(L["EVIL Rises messages this session: received %d  -  stored %d  -  dropped %d"],
+                n.received, n.stored, n.dropped)
+            if n.topReason then
+                line = line .. "  -  " .. string.format(L["top drop reason: %s"],
+                    (cs.DROP_REASON_TEXT or {})[n.topReason] or n.topReason)
+            end
+            local fs = UI:CreateText(content, line, 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            fs:SetPoint("TOPLEFT", 0, -yOff)
+            yOff = yOff + LINE_H + 2
+        end
+
+        ------------------------------------------------------------------
+        -- Where the time goes (issue #324): what /eviltools perf prints. A section, under the shared title.
+        ------------------------------------------------------------------
+        yOff = SectionTitle(content, L["Performance"], yOff)
+        for _, line in ipairs(EVRFeatures.Perf:Lines()) do
+            local fs = UI:CreateText(content, line, 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            fs:SetPoint("TOPLEFT", 0, -yOff)
+            yOff = yOff + LINE_H
+        end
+        perfPrintBtn:ClearAllPoints()
+        perfPrintBtn:SetPoint("TOPLEFT", 0, -(yOff + 2))
+        perfPrintBtn:Show()
+        perfResetBtn:ClearAllPoints()
+        perfResetBtn:SetPoint("LEFT", perfPrintBtn, "RIGHT", 6, 0)
+        perfResetBtn:Show()
+        yOff = yOff + 32
+
+        ------------------------------------------------------------------
+        -- The recruitment: the gossip's rounds, the requests, the whisper test and the channel probe.
+        ------------------------------------------------------------------
+        local lines = RecruitLines()
+        probeBtn:Hide()
+        if lines then
+            yOff = SectionTitle(content, L["Recruitment"], yOff)
+            for _, line in ipairs(lines) do
+                local fs = UI:CreateText(content, line, 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+                fs:SetPoint("TOPLEFT", 0, -yOff)
+                yOff = yOff + LINE_H
+            end
+            probeBtn:ClearAllPoints()
+            probeBtn:SetPoint("TOPLEFT", 0, -(yOff + 2))
+            probeBtn:Show()
+            yOff = yOff + 32
+        end
+
+        ------------------------------------------------------------------
+        -- Alliance diagnostics. A cross-guild sync with no instrumentation
+        -- cannot be debugged in the field, so the counters and the per-guild
+        -- freshness live here, next to the mesh health line.
+        ------------------------------------------------------------------
+        local ally, async = EVRFeatures.Alliance, EVRFeatures.AllianceSync
+        if ally and async and ally:Get() then
+            local diag = async:Diagnostics()
+            local pact = ally:Get()
+            local bridge = ally:CurrentBridge() or L["nobody online"]
+            if ally:AmBridge() then bridge = bridge .. " " .. L["(you)"] end
+
+            yOff = SectionTitle(content, string.format(
+                L["Alliance %s  -  bridge: %s  -  probes %d"],
+                pact.tag, bridge, diag.stats.probes), yOff)
+
+            local counters = UI:CreateText(content, string.format(
+                L["head %d/%d  -  pull %d/%d  -  push %d/%d  -  rejected %d"],
+                diag.stats.headOut, diag.stats.headIn,
+                diag.stats.pullOut, diag.stats.pullIn,
+                diag.stats.pushOut, diag.stats.pushIn, diag.stats.rejected),
+                11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            counters:SetPoint("TOPLEFT", 0, -yOff)
+            yOff = yOff + LINE_H + 4
+
+            -- The guilds' table: the shared header row, its labels column labels (#371).
+            local DOMAINS = { "roster", "craft", "events", "lfg", "board" }
+            local colHdr = { L["GUILD"], L["HEAD IN"], L["PUSH IN"] }
+            local xs = { 8, 130, 200 }
+            local th = UI:CreateTableHeader(content)
+            th:SetPoint("TOPLEFT", 0, -yOff)
+            th:SetPoint("TOPRIGHT", 0, -yOff)
+            for i, label in ipairs(colHdr) do
+                local fs = UI:CreateHeaderText(th, label, 9)
+                fs:SetPoint("LEFT", xs[i], 0)
+            end
+            for i, d in ipairs(DOMAINS) do
+                local fs = UI:CreateHeaderText(th, d, 9)
+                fs:SetPoint("LEFT", 275 + (i - 1) * 58, 0)
+            end
+            yOff = yOff + 26
+
+            for _, g in ipairs(diag.guilds) do
+                local nameFS = UI:CreateText(content, g.guild, 11, C.text.r, C.text.g, C.text.b)
+                nameFS:SetPoint("TOPLEFT", 8, -yOff)
+                nameFS:SetWidth(118)
+                nameFS:SetJustifyH("LEFT")
+                nameFS:SetWordWrap(false)
+
+                local headFS = UI:CreateText(content,
+                    g.lastHeadIn and EVRFeatures:TimeAgo(g.lastHeadIn) or L["never"],
+                    11, C.label.r, C.label.g, C.label.b)
+                headFS:SetPoint("TOPLEFT", 130, -yOff)
+
+                local pushFS = UI:CreateText(content,
+                    g.lastPushIn and EVRFeatures:TimeAgo(g.lastPushIn) or L["never"],
+                    11, C.label.r, C.label.g, C.label.b)
+                pushFS:SetPoint("TOPLEFT", 200, -yOff)
+
+                -- "--" means we have never received that domain from this guild.
+                for i, d in ipairs(DOMAINS) do
+                    local info = g.domains[d]
+                    local has = info and (info.theirs or 0) > 0
+                    local fs = UI:CreateText(content, has and L["ok"] or "--", 11,
+                        has and C.ok.r or C.disabled.r,
+                        has and C.ok.g or C.disabled.g,
+                        has and C.ok.b or C.disabled.b)
+                    fs:SetPoint("TOPLEFT", 275 + (i - 1) * 58, -yOff)
+                end
+                yOff = yOff + LINE_H
+            end
+            yOff = yOff + GAP
+        end
+
+        for idx, r in ipairs(rows) do
+            local row = MakeRow(content, yOff, idx)
+            local cr, cg, cb = EVRFeatures:GetClassColor(r.class)
+            local nameFS = UI:CreateText(row, r.name, 11, cr, cg, cb)
+            nameFS:SetPoint("LEFT", 8, 0)
+
+            if not r.hasAddon then
+                local st = UI:CreateText(row, L["no addon"], 11, C.danger.r, C.danger.g, C.danger.b)
+                st:SetPoint("LEFT", 180, 0)
+            else
+                local st = UI:CreateText(row, ICON_DONE, 11, C.text.r, C.text.g, C.text.b)
+                st:SetPoint("LEFT", 180, 0)
+                -- An outdated version is a warning: gold is not a status (#371).
+                local verColor = r.outdated and C.warn or C.textSoft
+                local verStr = r.version and ("v" .. r.version) or "?"
+                if r.outdated then verStr = verStr .. L[" (outdated)"] end
+                local ver = UI:CreateText(row, verStr, 11, verColor.r, verColor.g, verColor.b)
+                ver:SetPoint("LEFT", 220, 0)
+
+                local last = UI:CreateText(row, EVRFeatures:TimeAgo(r.lastUpdate), 11, C.label.r, C.label.g, C.label.b)
+                last:SetPoint("LEFT", 420, 0)
+            end
+
+            yOff = yOff + ROW_H + 2
+        end
+
+        if #rows == 0 then
+            local empty = UI:CreateText(content, L["No roster data yet."], 11, C.textSoft.r, C.textSoft.g, C.textSoft.b)
+            empty:SetPoint("TOPLEFT", 8, -(yOff + 4))
+        end
+        content:SetHeight(math.max(1, yOff))
+    end
+
+    -- Live-update the mesh line as HELLOs arrive (throttled in EVRFeatures.Mesh),
+    -- but only while this sub-panel is actually visible.
+    if EVRFeatures.Mesh then
+        EVRFeatures.Mesh:OnRefresh(function()
+            if panel:IsShown() then refresh() end
+        end)
+    end
+
+    return refresh
+end
+
+----------------------------------------------------------------------
+-- Panel assembly (sub-tab bar + sub-panels)
+----------------------------------------------------------------------
+function EVRFeatures:CreateAuditPanel(parent, _mainFrame)
+    parent.subPanels = {}
+    parent.activeSub = "ready"
+
+    local subtabs = {}
+    for _, t in ipairs(SUBTABS) do
+        if not t.tbc or EVRFeatures.Client.isAnniversary then subtabs[#subtabs + 1] = t end
+    end
+
+    -- Flush with the Raids sub-tab bar's left edge and GAP under it, as every screen (#371).
+    local bar = CreateFrame("Frame", nil, parent)
+    bar:SetPoint("TOPLEFT", 0, -GAP)
+    bar:SetPoint("TOPRIGHT", 0, -GAP)
+    bar:SetHeight(28)
+    UI:StyleSubTabBar(bar)
+
+    local subTabBtns = {}
+    local function selectSub(key)
+        parent.activeSub = key
+        for k, info in pairs(parent.subPanels) do info.panel:SetShown(k == key) end
+        for k, btn in pairs(subTabBtns) do btn:SetActive(k == key) end
+        local info = parent.subPanels[key]
+        if info and info.refresh then EVRFeatures:SafeCall(info.refresh) end
+    end
+    parent.SelectSub = selectSub
+
+    parent.RefreshActive = function()
+        local info = parent.subPanels[parent.activeSub]
+        if info and info.refresh then EVRFeatures:SafeCall(info.refresh) end
+    end
+
+    local x = 0
+    for _, t in ipairs(subtabs) do
+        local btn = UI:CreateTab(bar, t.label, 130, true)
+        btn:SetPoint("LEFT", x, 0)
+        btn:SetScript("OnClick", function() selectSub(t.key) end)
+        subTabBtns[t.key] = btn
+        x = x + btn:GetWidth() + 4  -- a tab its label grew pushes the next one (issue #28)
+    end
+
+    -- A sub-tab's content: flush with the bar's left edge, its first line GAP under it.
+    local function makeSubPanel()
+        local p = CreateFrame("Frame", nil, parent)
+        p:SetPoint("TOPLEFT", 0, -(GAP + 28 + GAP))
+        p:SetPoint("BOTTOMRIGHT", 0, GAP)
+        p:Hide()
+        return p
+    end
+
+    local builders = { ready = BuildReadySub, attune = BuildAttuneSub, resist = BuildResistSub,
+        enchant = BuildEnchantSub, sync = BuildSyncSub }
+    for _, t in ipairs(subtabs) do
+        local p = makeSubPanel()
+        parent.subPanels[t.key] = { panel = p, refresh = builders[t.key](p) }
+    end
+
+    parent:SetScript("OnShow", function()
+        selectSub(parent.activeSub or "ready")
+    end)
+end

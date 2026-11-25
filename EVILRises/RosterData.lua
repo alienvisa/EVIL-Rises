@@ -118,19 +118,26 @@ function addon.ReadRoster()
     end
 
     readGuildProfessions(roster)
+    local engine = EVRFeatures
+    local synced = engine and engine.db and engine:IsOnGuildDB() and engine.db.members
     for _, member in ipairs(roster.members) do
         if member.isPlayer then
             readPlayerProfessions(member)
         end
         local primary, all = {}, {}
-        for id, skill in pairs(member.skills) do
-            local line = skill.name
-            if type(skill.rank) == "number" and skill.rank > 0 then
-                line = line .. " (" .. skill.rank .. ")"
-            end
-            all[#all + 1] = line
-            if not secondarySkills[id] then
-                primary[#primary + 1] = skill.name
+        local record = synced and synced[engine:KeyOfRosterName(member.name)]
+        local professions = record and record.professions
+        local useSnapshot = not member.isPlayer and type(professions) == "table"
+        for id, skill in pairs(useSnapshot and professions or member.skills) do
+            if type(skill) == "table" and hasText(skill.name) then
+                local line = skill.name
+                if type(skill.rank) == "number" and skill.rank > 0 then
+                    line = line .. " (" .. skill.rank .. ")"
+                end
+                all[#all + 1] = line
+                if (useSnapshot and skill.isPrimary) or (not useSnapshot and not secondarySkills[id]) then
+                    primary[#primary + 1] = skill.name
+                end
             end
         end
         table.sort(primary)

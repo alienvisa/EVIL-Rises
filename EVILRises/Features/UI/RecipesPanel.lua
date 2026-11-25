@@ -1,0 +1,643 @@
+----------------------------------------------------------------------
+-- EVIL Rises - Recipes Panel
+-- Searchable guild recipe browser, grouped by profession
+----------------------------------------------------------------------
+local UI = EVRFeatures.UI
+local C = EVRFeatures.Colors
+local L = EVRFeatures.L
+
+local ROW_HEIGHT = 24
+
+-- Resolved per resize by UI:ResolveColumns (UI/Layout.lua). The online
+-- dot rides inside the recipe cell, so it cannot be lost to a narrow
+-- window. PROFESSION is the one that goes: the icon in the row already
+-- says which profession it is.
+local COLUMNS = {
+    { key = "recipe",     min = 200, weight = 3, priority = 100, required = true },
+    { key = "profession", min = 130, weight = 0, priority = 40 },
+    { key = "crafters",   min = 140, weight = 2, priority = 60,  required = true },
+}
+
+local COL_GAP    = 10
+local ROW_INSET  = 10   -- x of the first cell inside a row
+local SIDE_MARGIN = 10  -- panel edge to the list
+local ROW_GUTTER = UI.SCROLL_GUTTER   -- rows stop clear of the scrollbar (#371)
+local TOP_PAD    = 8    -- panel top to the top bar
+local TITLE_H    = 26   -- title + search row, above the profession filters
+local HEADER_H   = 24   -- column header strip
+local LIST_BOTTOM = 40  -- footer strip under the list
+
+----------------------------------------------------------------------
+-- Profession icons (TBC tradeskill textures)
+----------------------------------------------------------------------
+local PROF_ICONS = {
+    ["Alchemy"]         = "Interface\\Icons\\Trade_Alchemy",
+    ["Blacksmithing"]   = "Interface\\Icons\\Trade_BlackSmithing",
+    ["Enchanting"]      = "Interface\\Icons\\Trade_Engraving",
+    ["Engineering"]     = "Interface\\Icons\\Trade_Engineering",
+    ["Herbalism"]       = "Interface\\Icons\\Spell_Nature_NatureTouchGrow",
+    ["Jewelcrafting"]   = "Interface\\Icons\\INV_Misc_Gem_01",
+    ["Leatherworking"]  = "Interface\\Icons\\Trade_LeatherWorking",
+    ["Skinning"]        = "Interface\\Icons\\INV_Misc_Pelt_Wolf_01",
+    ["Tailoring"]       = "Interface\\Icons\\Trade_Tailoring",
+    ["Cooking"]         = "Interface\\Icons\\INV_Misc_Food_15",
+    ["First Aid"]       = "Interface\\Icons\\Spell_Holy_SealOfSacrifice",
+    ["Fishing"]         = "Interface\\Icons\\Trade_Fishing",
+}
+
+local PROF_COLORS = {
+    ["Alchemy"]         = { r = 0.90, g = 0.75, b = 0.20 },
+    ["Blacksmithing"]   = { r = 0.70, g = 0.50, b = 0.30 },
+    ["Enchanting"]      = { r = 0.80, g = 0.40, b = 0.80 },
+    ["Engineering"]     = { r = 0.80, g = 0.65, b = 0.20 },
+    ["Herbalism"]       = { r = 0.30, g = 0.85, b = 0.30 },
+    ["Jewelcrafting"]   = { r = 0.85, g = 0.25, b = 0.35 },
+    ["Leatherworking"]  = { r = 0.65, g = 0.50, b = 0.30 },
+    ["Skinning"]        = { r = 0.65, g = 0.55, b = 0.35 },
+    ["Tailoring"]       = { r = 0.60, g = 0.45, b = 0.80 },
+    ["Cooking"]         = { r = 0.85, g = 0.55, b = 0.25 },
+    ["First Aid"]       = { r = 0.90, g = 0.30, b = 0.30 },
+    ["Fishing"]         = { r = 0.30, g = 0.60, b = 0.85 },
+}
+
+----------------------------------------------------------------------
+-- Create the Recipes panel
+----------------------------------------------------------------------
+function EVRFeatures:CreateRecipesPanel(parent, _mainFrame)
+    local panel = CreateFrame("Frame", nil, parent)
+    panel:SetAllPoints()
+
+    -- State
+    local state = {
+        query = "",
+        profFilter = "All",
+        results = {},
+        scrollOffset = 0,
+        open = nil,      -- the recipe opened in place (issue #389), by its key
+    }
+
+    -- A recipe's identity in the list: its item, else its name and profession.
+    local function keyOf(e) return e.itemId and ("i" .. e.itemId) or ((e.name or "?") .. "|" .. (e.profName or "")) end
+
+    ----------------------------------------------------------------
+    -- Top bar: search + profession filters
+    ----------------------------------------------------------------
+    local topBar = CreateFrame("Frame", nil, panel)
+    topBar:SetPoint("TOPLEFT", 10, -8)
+    topBar:SetPoint("TOPRIGHT", -10, -8)
+    topBar:SetHeight(60)
+
+    -- Title
+    local title = UI:CreateTitle(topBar, L["Guild Recipes"], 14)
+    title:SetPoint("TOPLEFT", 0, 0)
+
+    -- Result count
+    local countText = UI:CreateText(topBar, "", 10, C.silver.r, C.silver.g, C.silver.b)
+    countText:SetPoint("LEFT", title, "RIGHT", 12, 0)
+
+    -- Search box: the shared field, with its own hint while empty (#371).
+    local searchBox = UI:CreateInput(topBar, 220, 24, { max = 50, placeholder = L["Search recipes..."] })
+    searchBox:SetPoint("TOPRIGHT", 0, 0)
+
+    -- Realm-wide crafter finder (guild + mesh) — opens the CraftFinder popup.
+    local realmBtn = UI:CreateButton(topBar, L["Find a Crafter"], 120, 24)
+    realmBtn:SetPoint("RIGHT", searchBox, "LEFT", -8, 0)
+    realmBtn:SetScript("OnClick", function() EVRFeatures:ShowCraftFinder() end)
+
+    -- Profession filter buttons row
+    -- Anchored on the left only: UI:FlowBar reads GetWidth to decide where
+    -- to wrap, and a frame pinned on both sides reports a stale width in
+    -- the same frame the container was resized.
+    local filterRow = CreateFrame("Frame", nil, topBar)
+    filterRow:SetPoint("TOPLEFT", 0, -TITLE_H)
+    filterRow:SetSize(400, 26)
+
+    local filterButtons = {}
+    local detail   -- the opened recipe's block, made with the list below
+
+    local function RefreshResults()
+        if not EVRFeatures.RecipeTracker then
+            state.results = {}
+        else
+            state.results = EVRFeatures.RecipeTracker:Search(state.query, state.profFilter)
+        end
+        -- Opened on an item (Alt-click, an order's card): only the recipes that make it, and the
+        -- title says so until a filter or the search lets go of it.
+        local itemName = state.item and (EVRFeatures.Compat.GetItemInfo(state.item) or ("item:" .. state.item))
+        title:SetText(itemName and string.format(L["Recipes for %s"], itemName) or L["Guild Recipes"])
+        if state.item then
+            local only = {}
+            for _, e in ipairs(state.results) do if e.itemId == state.item then only[#only + 1] = e end end
+            state.results = only
+        end
+        state.scrollOffset = 0
+        countText:SetText(string.format(L["|cff888888%d results|r"], #state.results))
+        -- The marks after a name: the recipes I make, and how many orders ask for each item.
+        local O = EVRFeatures.CraftOrders
+        state.byItem = O and O:OrdersByItem() or {}
+        state.me = O and O:MyKey()
+        local at, n
+        if UI.WithDetail then
+            state.results, at, n = UI.WithDetail(state.results, function(e) return keyOf(e) == state.open end, ROW_HEIGHT, detail)
+        end
+        state.detailAt, state.detailRows = at, n
+        if not at then state.open = nil end
+    end
+
+    -- The chosen filter carries the shared selection mark (#371), not a tinted fill.
+    local function PaintFilters()
+        for _, fb in ipairs(filterButtons) do UI:SetSelected(fb, fb.profName == state.profFilter) end
+    end
+
+    -- A filter is a shared button: "All" by name, a profession by its icon, or by its first letters
+    -- in its colour where the client has no icon for it.
+    local function CreateFilterButton(profName)
+        local isAll = profName == "All"
+        local iconTex = not isAll and PROF_ICONS[profName] or nil
+        local text = (isAll and L["All"]) or (iconTex and "") or EVRFeatures:Utf8Head(L[profName], 3)
+        local btn = UI:CreateButton(filterRow, text, isAll and 40 or 26, 22)
+        btn.profName = profName
+
+        local icon
+        if iconTex then
+            icon = btn:CreateTexture(nil, "ARTWORK")
+            icon:SetSize(16, 16)
+            icon:SetPoint("CENTER")
+            icon:SetTexture(iconTex)
+        elseif not isAll then
+            local pc = PROF_COLORS[profName] or C.silver
+            btn.baseLabelColor = { pc.r, pc.g, pc.b }
+        end
+        btn.icon = icon
+        -- Position comes from UI:FlowBar, which wraps the row when the
+        -- window is too narrow to hold every profession on one line.
+
+        btn:SetScript("OnClick", function()
+            state.profFilter, state.item = profName, nil
+            PaintFilters()
+            RefreshResults()
+            panel:UpdateRows()
+        end)
+        -- Hooked, not set: the button's own hover state lives on OnEnter and OnLeave.
+        btn:HookScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText(L[profName], 1, 1, 1)
+            GameTooltip:Show()
+        end)
+        btn:HookScript("OnLeave", function() GameTooltip:Hide() end)
+
+        table.insert(filterButtons, btn)
+        return btn
+    end
+
+    -- Build profession filter buttons dynamically on show
+    local function RebuildFilterButtons()
+        -- Hide existing
+        for _, btn in ipairs(filterButtons) do btn:Hide() end
+        filterButtons = {}
+
+        -- Get known professions
+        local profs = EVRFeatures.RecipeTracker and EVRFeatures.RecipeTracker:GetAllProfessions() or {}
+        local allProfs = { "All" }
+        for _, p in ipairs(profs) do
+            table.insert(allProfs, p)
+        end
+
+        for _, profName in ipairs(allProfs) do
+            CreateFilterButton(profName)
+        end
+
+        -- Mark active
+        PaintFilters()
+
+        -- New buttons need placing straight away; the layout pass only
+        -- runs on resize.
+        if panel.Relayout then panel:Relayout() end
+    end
+
+    -- Hooked, not set: the field keeps its own Escape, focus and hint handlers.
+    searchBox:HookScript("OnTextChanged", function(self)
+        local text = self:GetText()
+        state.query, state.item = text or "", nil
+        RefreshResults()
+        panel:UpdateRows()
+    end)
+    searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+
+    ----------------------------------------------------------------
+    -- Column headers
+    ----------------------------------------------------------------
+    -- The shared table header (#371): no fill, a 1px rule under the column labels.
+    local headerFrame = UI:CreateTableHeader(panel, HEADER_H)
+    headerFrame:SetPoint("TOPLEFT", topBar, "BOTTOMLEFT", 0, -4)
+    headerFrame:SetPoint("TOPRIGHT", topBar, "BOTTOMRIGHT", 0, -4)
+
+    -- Header cells are positioned by the layout pass, keyed the same way
+    -- the row cells are so the two can never drift apart.
+    local headerByKey = {
+        recipe     = UI:CreateHeaderText(headerFrame, L["RECIPE"], 10),
+        profession = UI:CreateHeaderText(headerFrame, L["PROFESSION"], 10),
+        crafters   = UI:CreateHeaderText(headerFrame, L["CRAFTERS"], 10),
+    }
+    for _, fs in pairs(headerByKey) do
+        fs:SetJustifyH("LEFT")
+        fs:SetWordWrap(false)
+    end
+
+    ----------------------------------------------------------------
+    -- Scroll frame with rows
+    ----------------------------------------------------------------
+    local listFrame = CreateFrame("Frame", nil, panel)
+    listFrame:SetPoint("TOPLEFT", headerFrame, "BOTTOMLEFT", 0, 0)
+    listFrame:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -SIDE_MARGIN, LIST_BOTTOM)
+
+    local scrollFrame = CreateFrame("ScrollFrame", "EVRFeaturesRecipeScroll", listFrame, "FauxScrollFrameTemplate")
+    scrollFrame:SetAllPoints()
+    UI:SkinScrollBar(scrollFrame, "EVRFeaturesRecipeScroll")
+    -- The opened recipe sits over the rows it takes; what scrolls past the list's edge is cut.
+    if listFrame.SetClipsChildren then listFrame:SetClipsChildren(true) end
+    detail = EVRFeatures.CreateCraftDetail and EVRFeatures:CreateCraftDetail(listFrame)
+    if detail then
+        detail:SetFrameLevel(listFrame:GetFrameLevel() + 5)
+        -- Resized past where the order fits beside the columns: it takes other rows (#415).
+        detail.onReflow = function() panel:Reload() end
+    end
+
+    -- Create row frames
+    local rows = {}
+
+    local function CreateRow(index)
+        local row = CreateFrame("Button", nil, listFrame, "BackdropTemplate")
+        row:SetHeight(ROW_HEIGHT)
+        row:SetPoint("TOPLEFT", 0, -((index - 1) * ROW_HEIGHT))
+        row:SetPoint("TOPRIGHT", -ROW_GUTTER, -((index - 1) * ROW_HEIGHT))
+        row:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8x8" })
+
+        -- Online dot: rides inside the recipe cell
+        local statusDot = row:CreateTexture(nil, "OVERLAY")
+        statusDot:SetSize(8, 8)
+        statusDot:SetTexture("Interface\\Buttons\\WHITE8x8")
+        row.statusDot = statusDot
+
+        -- Recipe name
+        local recipeName = row:CreateFontString(nil, "OVERLAY")
+        EVRFeatures:ApplyFont(recipeName, 11)
+        recipeName:SetJustifyH("LEFT")
+        recipeName:SetWordWrap(false)
+        row.recipeName = recipeName
+
+        -- Profession icon + name
+        local profIcon = row:CreateTexture(nil, "ARTWORK")
+        profIcon:SetSize(16, 16)
+        row.profIcon = profIcon
+
+        local profName = row:CreateFontString(nil, "OVERLAY")
+        EVRFeatures:ApplyFont(profName, 10)
+        profName:SetPoint("LEFT", profIcon, "RIGHT", 4, 0)
+        profName:SetJustifyH("LEFT")
+        profName:SetWordWrap(false)
+        row.profName = profName
+
+        -- Player name
+        local playerName = row:CreateFontString(nil, "OVERLAY")
+        EVRFeatures:ApplyFont(playerName, 11)
+        playerName:SetJustifyH("LEFT")
+        playerName:SetWordWrap(false)
+        row.playerName = playerName
+
+        -- Place every cell from a resolved layout.
+        function row:ApplyColumns(layout)
+            local byKey = layout.byKey
+
+            local rec = byKey.recipe
+            if rec and rec.shown then
+                self.statusDot:ClearAllPoints()
+                self.statusDot:SetPoint("LEFT", ROW_INSET + rec.x, 0)
+                self.recipeName:ClearAllPoints()
+                self.recipeName:SetPoint("LEFT", ROW_INSET + rec.x + 22, 0)
+                self.recipeName:SetWidth(math.max(20, rec.w - 22))
+            end
+
+            local prof = byKey.profession
+            self.profIcon:SetShown(prof and prof.shown)
+            self.profName:SetShown(prof and prof.shown)
+            if prof and prof.shown then
+                self.profIcon:ClearAllPoints()
+                self.profIcon:SetPoint("LEFT", ROW_INSET + prof.x, 0)
+                self.profName:SetWidth(math.max(20, prof.w - 20))
+            end
+
+            local cr = byKey.crafters
+            if cr and cr.shown then
+                self.playerName:ClearAllPoints()
+                self.playerName:SetPoint("LEFT", ROW_INSET + cr.x, 0)
+                self.playerName:SetWidth(cr.w)
+            end
+        end
+
+        -- Whisper button
+        local whisperBtn = UI:CreateButton(row, L["Whisper"], 60, 20)
+        whisperBtn:SetPoint("RIGHT", 0, 0)
+        whisperBtn:SetFrameLevel(row:GetFrameLevel() + 2)
+        whisperBtn:Hide()
+        row.whisperBtn = whisperBtn
+
+        -- Hover helpers (prevent flicker when mouse moves to whisper button)
+        local function RowEnter(self)
+            self:SetBackdropColor(C.rowHover.r, C.rowHover.g, C.rowHover.b, C.rowHover.a)
+            if self.data then
+                if self.data.itemId then
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    GameTooltip:SetItemByID(self.data.itemId)
+                    GameTooltip:Show()
+                elseif self.data.spellId then
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    GameTooltip:SetHyperlink("enchant:" .. self.data.spellId)
+                    GameTooltip:Show()
+                end
+            end
+            if self.firstOnlineCrafter then
+                self.whisperBtn:Show()
+            end
+        end
+        local function RowLeave(self)
+            -- Don't hide if mouse moved onto the whisper button
+            if self.whisperBtn:IsMouseOver() then return end
+            local bg = (index % 2 == 0) and C.row2 or C.row1
+            self:SetBackdropColor(bg.r, bg.g, bg.b, bg.a)
+            GameTooltip:Hide()
+            self.whisperBtn:Hide()
+        end
+
+        row:SetScript("OnEnter", RowEnter)
+        row:SetScript("OnLeave", RowLeave)
+        -- A click opens the recipe in place (issue #389); Shift-click links its item.
+        row:SetScript("OnClick", function(self)
+            local e = self.data
+            if not e then return end
+            if IsShiftKeyDown() and e.itemId and HandleModifiedItemClick then
+                local _, link = EVRFeatures.Compat.GetItemInfo(e.itemId)
+                if link then HandleModifiedItemClick(link) end
+                return
+            end
+            if not detail then return end
+            local k = keyOf(e)
+            if state.open == k then state.open = nil else state.open = k end
+            state.openTo = nil
+            panel:Reload()
+        end)
+
+        -- When mouse leaves the whisper button, check if still on the row
+        whisperBtn:HookScript("OnLeave", function(self)
+            local rowParent = self:GetParent()
+            if not rowParent:IsMouseOver() then
+                RowLeave(rowParent)
+            end
+        end)
+
+        rows[index] = row
+        return row
+    end
+
+    -- Rows are pooled and grown on demand: how many exist depends on how
+    -- tall the window is right now.
+    panel.visibleRows = 0
+    local function AcquireRows(n)
+        for i = #rows + 1, n do
+            local row = CreateRow(i)
+            if panel.colLayout then row:ApplyColumns(panel.colLayout) end
+        end
+        for i = 1, #rows do
+            if i > n then rows[i]:Hide() end
+        end
+        panel.visibleRows = n
+    end
+
+    ----------------------------------------------------------------
+    -- Update visible rows from state.results
+    ----------------------------------------------------------------
+    function panel:UpdateRows()
+        local offset = FauxScrollFrame_GetOffset(scrollFrame)
+        local total = #state.results
+        local visible = self.visibleRows or 0
+        if visible < 1 then return end
+
+        FauxScrollFrame_Update(scrollFrame, total, visible, ROW_HEIGHT)
+
+        for i = 1, visible do
+            local row = rows[i]
+            local dataIdx = offset + i
+            local entry = state.results[dataIdx]
+            if entry and not entry.__detail then
+                row.data = entry
+                row:Show()
+
+                -- Alternate row colors
+                local bg = (i % 2 == 0) and C.row2 or C.row1
+                row:SetBackdropColor(bg.r, bg.g, bg.b, bg.a)
+
+                -- Online status dot
+                if entry.hasOnline then
+                    row.statusDot:SetVertexColor(C.online.r, C.online.g, C.online.b, 1.0)
+                else
+                    row.statusDot:SetVertexColor(C.offline.r, C.offline.g, C.offline.b, 0.5)
+                end
+
+                -- Recipe name, and its marks
+                local marks = ""
+                for _, c in ipairs(entry.crafters or {}) do
+                    if state.me and c.playerKey == state.me then
+                        marks = string.format("  |cff%02x%02x%02x%s|r", C.ok.r * 255, C.ok.g * 255, C.ok.b * 255, L["you craft"])
+                    end
+                end
+                local orders = entry.itemId and state.byItem and state.byItem[entry.itemId]
+                if orders and orders > 0 then
+                    marks = marks .. string.format("  |cff%02x%02x%02x%s|r", C.gold.r * 255, C.gold.g * 255, C.gold.b * 255,
+                        string.format(L["%d orders"], orders))
+                end
+                row.recipeName:SetText((entry.name or "?") .. marks)
+                row.recipeName:SetTextColor(C.text.r, C.text.g, C.text.b)
+                if keyOf(entry) == state.open then row:SetBackdropColor(C.panel.r, C.panel.g, C.panel.b, 1) end
+
+                -- Profession
+                local iconPath = PROF_ICONS[entry.profName]
+                if iconPath then
+                    row.profIcon:SetTexture(iconPath)
+                    row.profIcon:Show()
+                else
+                    row.profIcon:Hide()
+                end
+                local pc = PROF_COLORS[entry.profName] or C.silver
+                row.profName:SetText(entry.profName and L[entry.profName] or "")
+                row.profName:SetTextColor(pc.r, pc.g, pc.b)
+
+                -- Crafters list (grouped, class-colored)
+                local crafterParts = {}
+                local firstOnlineCrafter = nil
+                for _, crafter in ipairs(entry.crafters or {}) do
+                    local memberData = EVRFeatures.db.members[crafter.playerKey]
+                    local pClass = memberData and memberData.class
+                    local cc = pClass and EVRFeatures.ClassColors[pClass] or C.text
+                    local hex = string.format("%02x%02x%02x", cc.r * 255, cc.g * 255, cc.b * 255)
+                    local alpha = crafter.isOnline and "" or "|cff666666"
+                    local resetAlpha = crafter.isOnline and "" or "|r"
+                    table.insert(crafterParts, alpha .. "|cff" .. hex .. crafter.playerName .. "|r" .. resetAlpha)
+                    if crafter.isOnline and not firstOnlineCrafter then
+                        firstOnlineCrafter = crafter.playerName
+                    end
+                end
+                row.playerName:SetText(table.concat(crafterParts, ", "))
+                row.playerName:SetAlpha(1.0)
+
+                -- Whisper button — whisper first online crafter with item link
+                row.firstOnlineCrafter = firstOnlineCrafter
+                row.whisperBtn:SetScript("OnClick", function()
+                    if firstOnlineCrafter then
+                        local itemLink
+                        if entry.itemId then
+                            itemLink = select(2, EVRFeatures.Compat.GetItemInfo(entry.itemId))
+                        end
+                        if itemLink then
+                            ChatFrame_OpenChat("/w " .. firstOnlineCrafter .. " " .. string.format(L["Can you craft %s?"], itemLink))
+                        else
+                            ChatFrame_OpenChat("/w " .. firstOnlineCrafter .. " " .. string.format(L["Can you craft %s?"], entry.name or L["this item"]))
+                        end
+                    end
+                end)
+                row.whisperBtn:Hide()
+            else
+                row:Hide()
+                row.data = nil
+            end
+        end
+        if detail then
+            UI.PlaceDetail(detail, listFrame, state.detailAt, state.detailRows or 0, offset, visible, ROW_HEIGHT, ROW_GUTTER)
+        end
+    end
+
+    scrollFrame:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, ROW_HEIGHT, function()
+            panel:UpdateRows()
+        end)
+    end)
+
+    -- The opened recipe's block: its item, its crafters online first, and what it takes.
+    function panel:PaintDetail(fresh)
+        if not detail then return end
+        if not state.open then detail:Hide(); return end
+        local e
+        for _, x in ipairs(state.results) do if not x.__detail and keyOf(x) == state.open then e = x end end
+        if not e then detail:Hide(); return end
+        local crafters = {}
+        for _, c in ipairs(e.crafters or {}) do
+            local m = EVRFeatures.db.members and EVRFeatures.db.members[c.playerKey]
+            crafters[#crafters + 1] = { key = c.playerKey, name = c.playerName, class = m and m.class, online = c.isOnline == true }
+        end
+        table.sort(crafters, function(a, b)
+            if a.online ~= b.online then return a.online end
+            return (a.name or "") < (b.name or "")
+        end)
+        detail:SetRecipe({ id = keyOf(e), item = e.itemId, crafters = crafters, meta = e.profName and L[e.profName] or nil },
+            state.openTo, fresh)
+    end
+
+    -- Search again, keeping the scroll, and paint the rows and the opened recipe.
+    function panel:Reload()
+        local offset = FauxScrollFrame_GetOffset(scrollFrame)
+        RefreshResults()
+        if FauxScrollFrame_SetOffset then FauxScrollFrame_SetOffset(scrollFrame, offset) end
+        self:UpdateRows()
+        self:PaintDetail()
+    end
+    panel.Refresh = panel.Reload
+
+    -- Open the recipe that makes `itemId`: the Crafts tab's Alt-click, an order's card.
+    function panel:FocusItem(itemId, toKey)
+        state.profFilter, state.query = "All", ""
+        searchBox:SetText("")
+        state.item, state.open = itemId, "i" .. itemId     -- after SetText: its handler clears the item
+        RefreshResults()
+        if not state.detailAt then state.item = nil; RefreshResults(); return false end
+        PaintFilters()
+        state.openTo = toKey
+        if FauxScrollFrame_SetOffset then FauxScrollFrame_SetOffset(scrollFrame, 0) end
+        self:UpdateRows()
+        self:PaintDetail(true)
+        return true
+    end
+
+    ----------------------------------------------------------------
+    -- Info bar at bottom
+    ----------------------------------------------------------------
+    local infoBar = CreateFrame("Frame", nil, panel)
+    infoBar:SetPoint("BOTTOMLEFT", 10, 8)
+    infoBar:SetPoint("BOTTOMRIGHT", -10, 8)
+    infoBar:SetHeight(24)
+
+    local infoText = UI:CreateText(infoBar, "", 10, C.label.r, C.label.g, C.label.b)
+    infoText:SetPoint("LEFT", 0, 0)
+
+    -- A hint, in `textSoft`: not the dimmed gold it used to be (#371).
+    local scanHint = UI:CreateText(infoBar, L["Open your tradeskill window to share your recipes"], 10,
+        C.textSoft.r, C.textSoft.g, C.textSoft.b)
+    scanHint:SetPoint("RIGHT", 0, 0)
+
+    ----------------------------------------------------------------
+    -- Refresh on show
+    ----------------------------------------------------------------
+    parent:SetScript("OnShow", function()
+        RebuildFilterButtons()
+        RefreshResults()
+        panel:UpdateRows()
+
+        -- Update info bar
+        local totalPlayers = 0
+        local totalRecipes = 0
+        for _, professions in pairs((EVRFeatures.db and EVRFeatures.db.recipes) or {}) do
+            totalPlayers = totalPlayers + 1
+            for _, recipes in pairs(professions) do
+                totalRecipes = totalRecipes + #recipes
+            end
+        end
+        infoText:SetText(string.format(L["|cff888888%d crafters  |  %d total recipes indexed|r"], totalPlayers, totalRecipes))
+    end)
+
+    ----------------------------------------------------------------
+    -- Layout: profession filters wrap, columns drop, rows follow height.
+    ----------------------------------------------------------------
+    function panel:Relayout(w, h)
+        w = w or parent:GetWidth()
+        h = h or parent:GetHeight()
+        if not w or not h or w < 1 or h < 1 then return end
+
+        local inner = w - SIDE_MARGIN * 2
+        filterRow:SetWidth(inner)
+        local filterH = UI:FlowBar(filterRow, filterButtons, { gap = 2, rowGap = 2, rowH = 22 })
+        topBar:SetHeight(TITLE_H + filterH)
+
+        local layout = UI:ResolveColumns(COLUMNS, inner - ROW_GUTTER - ROW_INSET, COL_GAP)
+        self.colLayout = layout
+        for _, col in ipairs(layout) do
+            local fs = headerByKey[col.key]
+            if fs then
+                fs:SetShown(col.shown)
+                if col.shown then
+                    fs:ClearAllPoints()
+                    fs:SetPoint("LEFT", ROW_INSET + col.x, 0)
+                    fs:SetWidth(col.w)
+                end
+            end
+        end
+
+        local listTop = TOP_PAD + TITLE_H + filterH + 4 + HEADER_H
+        AcquireRows(UI:ResolveRows(h - listTop - LIST_BOTTOM, ROW_HEIGHT, 0))
+        for i = 1, self.visibleRows do rows[i]:ApplyColumns(layout) end
+        self:UpdateRows()
+    end
+
+    UI:MakeResponsive(parent, function(_, w, h) panel:Relayout(w, h) end)
+
+    -- Returned so a caller (and the layout tests) can reach the panel
+    -- rather than only its container.
+    return panel
+end
