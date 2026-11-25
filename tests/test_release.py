@@ -62,6 +62,51 @@ class ReleaseTests(unittest.TestCase):
                 )
             self.assertIn('Preserve the PR title when merging', failure.exception.stderr)
 
+    def test_version_sync_does_not_allocate_another_release(self):
+        root = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as folder:
+            repo = Path(folder)
+
+            def git(*args):
+                subprocess.run(['git', *args], cwd=repo, check=True, capture_output=True)
+
+            def version():
+                return subprocess.check_output(
+                    [sys.executable, '-B', '-m', 'scripts.release'], cwd=repo, text=True,
+                    env={**os.environ, 'PYTHONPATH': str(root)},
+                ).strip()
+
+            git('init', '-b', 'main')
+            git('config', 'user.email', 'test@example.com')
+            git('config', 'user.name', 'Release Test')
+            toc = repo / 'EVILRises' / 'EVILRises.toc'
+            toc.parent.mkdir()
+            toc.write_text('## Interface: 16001\n## Version: 0.4.5\n', encoding='utf-8')
+            git('add', '.')
+            git('commit', '-m', 'feat: publish addon')
+            git('tag', 'v0.6.0')
+            git('switch', '-c', 'version-sync')
+            subprocess.run(
+                [sys.executable, '-B', '-m', 'scripts.release', '--sync-toc', 'v0.6.0'],
+                cwd=repo, env={**os.environ, 'PYTHONPATH': str(root)}, check=True,
+            )
+            self.assertEqual(toc.read_bytes(), b'## Interface: 16001\n## Version: 0.6.0\n')
+            git('commit', '-am', 'chore(release): sync TOC to v0.6.0')
+            git('switch', 'main')
+            git('merge', '--no-ff', 'version-sync',
+                '-m', 'Merge pull request #1 from alienvisa/automation/sync-toc',
+                '-m', 'chore(release): sync TOC to v0.6.0')
+            self.assertEqual(version(), '')
+
+            git('reset', '--hard', 'v0.6.0')
+            git('merge', '--squash', 'version-sync')
+            git('commit', '-m', 'chore(release): sync TOC to v0.6.0 (#2)')
+            self.assertEqual(version(), '')
+
+            toc.write_text('## Interface: 16002\n## Version: 0.6.0\n', encoding='utf-8')
+            git('commit', '-am', 'chore(release): sync TOC to v0.6.0')
+            self.assertEqual(version(), 'v0.6.1')
+
     def test_successor_resumes_the_pending_draft_from_its_tag(self):
         github = Mock()
         github.releases.return_value = {'v0.4.5': {

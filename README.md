@@ -68,6 +68,12 @@ Pushes to `main` trigger publishing after CI passes. `feat` bumps minor, a title
 or a `BREAKING CHANGE:` footer bumps major, and other allowed types bump patch.
 The largest bump applies if several commits accumulated since the last release.
 
+After publishing, GitHub Actions opens or updates a PR to sync the version in
+`EVILRises/EVILRises.toc`. Enable **Allow GitHub Actions to create and approve pull
+requests** in **Settings → Actions → General**. Approve the bot PR's CI run if
+GitHub requires it, then merge the PR with its original title. A merge that only
+syncs the TOC version does not publish another release.
+
 ### Recovering a release
 
 Rerun the original release job. It reuses the staged ZIP and any valid
