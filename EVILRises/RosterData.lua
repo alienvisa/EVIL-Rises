@@ -88,10 +88,15 @@ function addon.ReadRoster()
     local canViewOfficerNote = C_GuildInfo.CanViewOfficerNote or CanViewOfficerNote
     roster.canViewOfficerNote = canViewOfficerNote and canViewOfficerNote()
     local playerGUID = UnitGUID("player")
+    local officerRanks = {}
+    local compat = EVRFeatures and EVRFeatures.Compat
     for index = 1, GetNumGuildMembers() do
         local name, rank, rankIndex, level, class, zone, note, officer, online, _, classFile,
             _, _, _, _, _, guid = GetGuildRosterInfo(index)
         if hasText(name) then
+            if rankIndex and rankIndex > 0 and officerRanks[rankIndex] == nil and compat then
+                officerRanks[rankIndex] = compat.HasOfficerPermissions(compat.GuildRankFlags(rankIndex))
+            end
             local elapsed, lastSeen = offlineTime(index, online)
             local race = guid and GetPlayerInfoByGUID and select(3, GetPlayerInfoByGUID(guid))
             local isPlayer = guid and guid == playerGUID
@@ -101,6 +106,7 @@ function addon.ReadRoster()
             local member = {
                 id = guid or nameKey(name), guid = guid, name = name, shortName = shortName(name),
                 rank = rank, rankIndex = rankIndex, level = level, class = class,
+                officerCrown = officerRanks[rankIndex],
                 classFile = classFile, zone = zone, online = not not online, elapsed = elapsed,
                 lastSeen = lastSeen, race = hasText(race) and race or nil, note = note,
                 officerNote = roster.canViewOfficerNote and officer or nil, skills = {}, isPlayer = isPlayer,

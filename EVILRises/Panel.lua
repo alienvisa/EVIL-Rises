@@ -1,8 +1,8 @@
 local _, addon = ...
 local colors = addon.colors
 
-local tabNames = { "Roster", "Professions", "Guild", "Bounty", "Alliances", "Recruitment", "Leadership", "Settings" }
-local tabWidths = { Roster = 69, Professions = 94, Guild = 55, Bounty = 70, Alliances = 76, Recruitment = 103, Leadership = 92, Settings = 72 }
+local tabNames = { "Roster", "Professions", "Guild", "Chat", "Bounty", "Alliances", "Recruitment", "Leadership", "Settings" }
+local tabWidths = { Roster = 69, Professions = 94, Guild = 55, Chat = 55, Bounty = 70, Alliances = 76, Recruitment = 103, Leadership = 92, Settings = 72 }
 local minWidth, minHeight = 944, 420
 local defaultWidth, defaultHeight = 1070, 620
 local panel
@@ -18,7 +18,13 @@ local function loadTabOrder(saved)
     end
     for _, name in ipairs(tabNames) do
         if not seen[name] then
-            order[#order + 1] = name
+            if name == "Chat" then
+                for i, existing in ipairs(order) do
+                    if existing == "Guild" then table.insert(order, i + 1, name); break end
+                end
+            else
+                order[#order + 1] = name
+            end
         end
     end
     return order

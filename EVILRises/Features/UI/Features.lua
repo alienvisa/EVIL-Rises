@@ -55,8 +55,13 @@ UI:RegisterFeature({
 -- feature is present and switched on.
 UI:RegisterFeature({
     id = "guild", label = L["Guild"], order = 50,
-    subs = { "raids", "loot", "calendar", "activity", "bulletin", "cta", "polls", "chat", "journal" },
+    subs = { "raids", "loot", "calendar", "activity", "bulletin", "cta", "polls", "journal" },
     build = function(c, win) EVRFeatures:CreateGuildHub(c, win) end,
+})
+
+UI:RegisterFeature({
+    id = "chat", label = L["Chat"], order = 50.5,
+    build = function(page) EVRFeatures:CreateGuildChatFeed(page, 0) end,
 })
 
 UI:RegisterFeature({

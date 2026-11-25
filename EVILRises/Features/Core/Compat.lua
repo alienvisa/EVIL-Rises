@@ -2260,23 +2260,30 @@ function Compat.ChannelHidesRaidIcons(name, number)
     return info ~= nil and NO_RAID_ICONS[info.zoneChannelID] == true
 end
 
--- Whether this character's rank may speak in officer chat, from the rank's flags (the fourth: officer chat,
--- speak): C_GuildInfo.GuildControlGetRankFlags(rankOrder) gives a table, the older GuildControlGetRankFlags
--- (rankOrder) the flags one by one. Nil when the client answers neither: then nobody knows, and the caller
--- goes on as before (#427).
+-- The indexed API accepts a one-based rank order. The old global reads the rank
+-- selected in Blizzard's guild controls, which can belong to someone else.
+function Compat.GuildRankFlags(rankIndex)
+    if type(rankIndex) ~= "number" then return end
+    local get = C_GuildInfo and C_GuildInfo.GuildControlGetRankFlags
+    if get then
+        local ok, flags = pcall(get, rankIndex + 1)
+        if ok and type(flags) == "table" then return flags end
+    end
+end
+
+function Compat.HasOfficerPermissions(flags)
+    -- Officer chat, promotion/demotion/removal, officer notes and guild information.
+    return flags and (flags[3] or flags[4] or flags[5] or flags[6] or flags[8]
+        or flags[11] or flags[12] or flags[13]) == true or false
+end
+
 function Compat.CanSpeakOfficerChat()
     if not (IsInGuild and IsInGuild()) then return nil end
     local rankIndex = select(3, GetGuildInfo("player"))
     if type(rankIndex) ~= "number" then return nil end
-    local order = rankIndex + 1
-    if C_GuildInfo and C_GuildInfo.GuildControlGetRankFlags then
-        local ok, flags = pcall(C_GuildInfo.GuildControlGetRankFlags, order)
-        if ok and type(flags) == "table" and flags[4] ~= nil then return flags[4] and true or false end
-    end
-    if GuildControlGetRankFlags then
-        local ok, _, _, _, speak = pcall(GuildControlGetRankFlags, order)
-        if ok and speak ~= nil then return speak and true or false end
-    end
+    if rankIndex == 0 then return true end
+    local flags = Compat.GuildRankFlags(rankIndex)
+    if flags then return flags[4] end
     return nil
 end
 
