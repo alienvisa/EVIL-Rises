@@ -43,7 +43,13 @@ class ReleaseTests(unittest.TestCase):
             git('tag', 'v0.4.4')
             git('commit', '--allow-empty', '-m', 'ci: add workflows')
             self.assertEqual(version(), 'v0.4.5')
-            git('commit', '--allow-empty', '-m', 'feat: add filters')
+            base = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
+            git('switch', '-c', 'feature')
+            git('commit', '--allow-empty', '-m', 'Work in progress')
+            git('switch', '--detach', base)
+            git('merge', '--no-ff', 'feature',
+                '-m', 'Merge pull request #1 from alienvisa/CI-pipeline',
+                '-m', 'feat: add CI pipeline')
             self.assertEqual(version(), 'v0.5.0')
             git('tag', 'v0.5.0')
             self.assertEqual(version(), 'v0.5.0')
@@ -53,7 +59,7 @@ class ReleaseTests(unittest.TestCase):
                     [sys.executable, '-B', '-m', 'scripts.release'], cwd=repo, text=True,
                     env={**os.environ, 'PYTHONPATH': str(root)}, check=True, capture_output=True,
                 )
-            self.assertIn('Use the PR title as the squash subject', failure.exception.stderr)
+            self.assertIn('Preserve the PR title when merging', failure.exception.stderr)
 
     def test_pending_previous_release_blocks_the_next_tag(self):
         github = Mock()

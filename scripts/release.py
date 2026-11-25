@@ -18,6 +18,7 @@ TITLE = re.compile(
     r"(feat|fix|chore|ci|docs|style|refactor|perf|test|build|revert)"
     r"(?:\([^()\r\n]+\))?(!)?: \S[^\r\n]*"
 )
+GITHUB_MERGE_SUBJECT = re.compile(r"Merge pull request #[1-9][0-9]* from \S+/\S+")
 TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
 LEVELS = ("patch", "minor", "major")
 LEGACY_RELEASE = "v0.4.4"
@@ -67,12 +68,18 @@ def next_tag(tags):
     levels = []
     for sha in git("rev-list", "--first-parent", f"{latest}..HEAD").splitlines():
         parents, subject, body = git("show", "-s", "--format=%P%x00%s%x00%b", sha).split("\0", 2)
-        if len(parents.split()) != 1:
-            raise ValueError(f"{sha[:12]} is a merge commit. Use squash merges into main.")
+        parent_count = len(parents.split())
+        if parent_count == 2 and GITHUB_MERGE_SUBJECT.fullmatch(subject):
+            # GitHub puts the PR title on the first line of the default merge body.
+            subject = body.lstrip().partition("\n")[0]
+        elif parent_count != 1:
+            raise ValueError(f"{sha[:12]} is not a standard GitHub PR merge. Use squash merging.")
         try:
             levels.append(release_level(subject, body))
         except ValueError as error:
-            raise ValueError(f"{sha[:12]}: {error}. Use the PR title as the squash subject.") from error
+            raise ValueError(
+                f"{sha[:12]}: {error}. Preserve the PR title when merging."
+            ) from error
     return bump(latest, max(levels, key=LEVELS.index))
 
 

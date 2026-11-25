@@ -40,9 +40,10 @@ Found a bug or have an idea for the guild? [Open an issue on GitHub](https://git
 ## Contributing and releases
 
 Use a Conventional Commit PR title, such as `feat(roster): add filters` or
-`fix: repair guild sync`. Squash merge and keep the PR title as the squash commit
-subject. CI checks the title, Lua 5.1 syntax, guild sync, versioning, release
-recovery, and the install ZIP.
+`fix: repair guild sync`. Prefer squash merging with the PR title as the commit
+subject. If you use GitHub's **Create a merge commit** option, keep the default
+merge subject and the PR title on the first line of the commit body. CI checks the
+title, Lua 5.1 syntax, guild sync, versioning, release recovery, and the install ZIP.
 
 In GitHub, enable squash merging, set the default squash commit message to
 **Pull request title and description**, and disable merge commits and rebase
