@@ -1,0 +1,13 @@
+package-as: EVILRises
+
+move-folders:
+  EVILRises/EVILRises: EVILRises
+
+ignore:
+  - .github
+  - .gitignore
+  - AGENTS.md
+  - README.md
+  - THEME.md
+  - scripts
+  - tests
