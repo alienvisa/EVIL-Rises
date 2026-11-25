@@ -14,6 +14,8 @@ On the **Roster**, a solid green dot means online and a hollow circle means offl
 
 Looking for an enchanter before raid time? Sort the roster by **Primary professions** to find one. If you need a particular recipe, open **Professions** to look it up, see which guildmates know it, and place a craft order.
 
+Open a guildmate's roster entry to see their last shared equipment, even while they're offline. EVIL Rises shares gear changes automatically. Item names use their rarity colors, and hovering over a piece shows its WoW item tooltip.
+
 ## Raid night and guild business
 
 - **Guild** keeps the calendar, polls, and bulletin together. Under **Raids** you'll find sessions and attendance. Under **Loot** you'll find wishlists, standings, and loot history.

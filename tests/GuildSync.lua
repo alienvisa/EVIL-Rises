@@ -28,6 +28,7 @@ local function client(name)
     local env = setmetatable({}, { __index = _G })
     env._G = env
     env.strmatch = string.match
+    env.tinsert = table.insert
     env.GetTime = function() return now end
     env.time = function() return math.floor(now) end
     env.GetServerTime = env.time
@@ -79,10 +80,11 @@ local function client(name)
         "Features/Modules/DataCollector", "Bounty" }) do
         setfenv(assert(loadfile("EVILRises/" .. path .. ".lua")), env)("EVILRises", {})
     end
-    e.DataCollector.CollectMyData = noop
-    e.DataCollector.GetBroadcastData = function()
-        return { name = name, class = "Mage", lastUpdate = env.time(),
+    c.gear = {}
+    e.DataCollector.CollectMyData = function()
+        e.db.myData = { name = name, realm = "Forever", class = "Mage", lastUpdate = env.time(), gear = c.gear,
             professions = { { name = "Tailoring", rank = 225, isPrimary = true } } }
+        return e.db.myData
     end
     e.SyncService:Initialize()
     e.Bounty:Initialize()
@@ -95,6 +97,22 @@ local a, b = alice.engine, bob.engine
 advance(12)
 assert(b.db.members["Alice-Forever"].professions[1].rank == 225)
 assert(a.db.members["Bob-Forever"].class == "Mage")
+local equipped = "item:15219:803:0:0:0:0:-19:1234"
+alice.gear[16] = { id = 15219, link = "|cff1eff00|H" .. equipped .. "|h[Blade of the Bear]|h|r",
+    name = "Blade of the Bear", quality = 2, suffix = -19, enchantId = 803 }
+a.CommSystem:BroadcastMyData(true)
+advance(1)
+local weapon = assert(b.db.members["Alice-Forever"].gear[16])
+assert(weapon.link == equipped and weapon.quality == 2)
+bob.online = false
+alice.gear[16] = nil
+a.CommSystem:BroadcastMyData(true)
+advance(1)
+assert(b.db.members["Alice-Forever"].gear[16].link == equipped)
+bob.online = true
+b.CommSystem:QueueSync(true)
+advance(3)
+assert(next(b.db.members["Alice-Forever"].gear) == nil)
 local function post(i)
     local reason = {}
     for j = 1, 175 do reason[j] = string.char(math.random(65, 122)) end

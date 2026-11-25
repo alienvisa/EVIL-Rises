@@ -25,14 +25,16 @@ function DataCollector:Initialize()
     EVRFeatures.Compat.RegisterEvent(frame, "CHARACTER_POINTS_CHANGED")
     frame:SetScript("OnEvent", function(_, event)
         if event == "PLAYER_EQUIPMENT_CHANGED" then
+            if DataCollector._equipmentPending then return end
+            DataCollector._equipmentPending = true
             C_Timer.After(0.5, function()
-                DataCollector:CollectMyData()
-                -- Broadcast updated gear to guild after a short delay
-                C_Timer.After(2, function()
-                    if EVRFeatures.CommSystem then
-                        EVRFeatures.CommSystem:BroadcastMyData()
-                    end
-                end)
+                DataCollector._equipmentPending = nil
+                local comm = EVRFeatures.CommSystem
+                if comm and comm.listening and EVRFeatures:IsOnGuildDB() then
+                    comm:BroadcastMyData(true)
+                else
+                    DataCollector:CollectMyData()
+                end
             end)
         elseif event == "SKILL_LINES_CHANGED" or event == "CHAT_MSG_SKILL" then
             C_Timer.After(1, function() DataCollector:CollectProfessions() end)
@@ -314,8 +316,8 @@ function DataCollector:CollectGear()
     local gear = {}
     local incomplete = false
 
-    for _, slotInfo in ipairs(EVRFeatures.SlotIDs) do
-        local slotId = slotInfo.id
+    -- Include shirt and tabard in the roster, separate from the item-level slots.
+    for slotId = 1, 19 do
         local itemLink = GetInventoryItemLink("player", slotId)
 
         if itemLink then
@@ -333,15 +335,20 @@ function DataCollector:CollectGear()
             gear[slotId] = {
                 link = itemLink,
                 id = itemId,
-                name = itemName or "",
-                quality = itemQuality or 0,
+                name = itemName or itemLink:match("|h%[(.-)%]|h") or "",
+                quality = itemQuality,
                 ilvl = itemLevel or 0,
                 enchantId = enchantId,
                 gems = gems,
                 suffix = suffix,   -- the random suffix ("of the Eagle"), issue #399; nil without one
             }
-        else
-            gear[slotId] = nil
+        elseif GetInventoryItemID then
+            local id = GetInventoryItemID("player", slotId)
+            if id then
+                gear[slotId] = { id = id, name = "", ilvl = 0 }
+                incomplete = true
+                EVRFeatures.Compat.GetItemInfo(id)
+            end
         end
     end
 
@@ -722,7 +729,7 @@ function DataCollector:GetBroadcastData()
         myData = self:CollectMyData()
     end
 
-    -- Create a clean copy without item links (too long for comms)
+    -- Keep the equipped item string without its localized hyperlink wrapper.
     local clean = {
         name = myData.name,
         realm = myData.realm,
@@ -749,6 +756,7 @@ function DataCollector:GetBroadcastData()
         for slotId, item in pairs(myData.gear) do
             local gearEntry = {
                 id = item.id,
+                link = item.link and item.link:match("|H(item:[^|]+)|h"),
                 name = item.name,
                 quality = item.quality,
                 ilvl = item.ilvl,
