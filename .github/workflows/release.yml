@@ -1,0 +1,62 @@
+name: Publish release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evil-rises-release
+  queue: max
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Publish stable WoW Forever release
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      CF_PROJECT_ID: ${{ vars.CF_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build, validate, and stage the release ZIP
+        id: package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B -m scripts.release package
+
+      - name: Publish to CurseForge and save the receipt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
+        run: python3 -B -m scripts.release publish-curseforge
+
+      - name: Verify the receipt and publish to GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.tag }}
+        run: python3 -B -m scripts.release publish-github
+
+      - name: Retain release files for recovery
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: release-files-${{ github.run_attempt }}
+          path: |
+            .release/*.zip
+            .release/release.json
+            .release/curseforge-*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
