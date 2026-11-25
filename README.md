@@ -1,4 +1,7 @@
 # EVIL Rises — WoW Forever
+<p align="center">
+  <img width="211" height="192" alt="EVIL" src="https://github.com/user-attachments/assets/a94d0bac-87fc-4c19-8010-82e03c43826f" />
+</p>
 
 EVIL Rises is the guild addon for **EVIL: Every Villian Is Lemons**. Open your usual guild window or type `/evil` to see the guild message of the day and who's online. From the same window you can find a crafter, check the raid calendar, or put a bounty on an enemy player.
 
