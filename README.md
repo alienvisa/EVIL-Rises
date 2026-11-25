@@ -1,30 +1,38 @@
-# EVIL Rises
+# EVIL Rises — WoW Forever
 
-**EVIL Rises is the guild addon for EVIL: Every Villian Is Lemons on World of Warcraft: Forever.** Open your usual guild window or type `/evil` to see who's online, find a crafter, plan a raid, or put a price on an enemy's head.
+EVIL Rises is the guild addon for **EVIL: Every Villian Is Lemons**. Open your usual guild window or type `/evil` to see the guild message of the day and who's online. From the same window you can find a crafter, check the raid calendar, or put a bounty on an enemy player.
 
-## Inside the guild window
+## Got ganked? Put a price on their head
 
-| Tab | What you can do |
-| --- | --- |
-| **Roster** | Search for a guildmate and sort by level, class, profession, zone, or last seen. Click a name for notes and linked alts, or inspect a nearby guildmate's gear. |
-| **Guild** | Find raid sessions and attendance under **Raids**, and wishlists, loot history, and standings under **Loot**. Use the calendar, bulletin, and polls to plan the next guild run. |
-| **Professions** | Look up a recipe, find a guildmate who can make it, and place a craft order. |
-| **Bounty** | Post a target, choose their faction, set a reward in gold, silver, and copper, and tell the guild why. Right-click a player and choose **Create bounty** to fill in their details. You can withdraw your own posts. |
-| **Alliances** | Manage guild pacts and keep up with allied guilds through bulletins and chat. |
-| **Recruitment** | Find recruits and track how new members are doing during their trials. |
-| **Leadership** | Review officer notes, manage ranks, and check the guild audit log. Access follows guild permissions. |
-| **Settings** | Adjust your interface, alerts, and enabled features. Choose **Open debug window** if you want to capture a log for a bug report. |
+Right-click the enemy player and choose **Create bounty**. The board opens with their name, class, and faction filled in. Lost sight of them on the corpse run? Open **Bounty** and type their name yourself.
 
-## Install and open
+Choose **Kill on sight**, **Camp**, or both. Set the reward in gold, silver, and copper, add a reason if you like, and post it. Your guildmates can see who they're after and why. You can withdraw your own bounty when the score is settled.
 
-1. Exit the game. From the addon ZIP or a download of this repository, copy the **EVILRises** folder into `World of Warcraft/_forever_/Interface/AddOns/`. The file `EVILRises.toc` should sit directly inside `AddOns/EVILRises/`.
-2. Start WoW Forever and enable **EVIL Rises** in the AddOns list.
-3. Use the guild keybind, the guild menu button, or `/evil`. The guild message of the day appears across the top.
+## Who's online, and who can make that?
 
-Drag the tabs into the order you like. Drag the bottom-right corner to resize the window, then click the padlock beside the close button to lock its size.
+On the **Roster**, a solid green dot means online and a hollow circle means offline. Click a column heading to sort, then click it again to reverse the order. Click a name to see the member's notes, professions, and linked characters.
 
-## Staying in sync
+Looking for an enchanter before raid time? Sort the roster by **Primary professions** to find one. If you need a particular recipe, open **Professions** to look it up, see which guildmates know it, and place a craft order.
 
-EVIL Rises quietly checks for updates at login, every 60 seconds, and whenever you open the guild window. Online guildmates running the addon exchange updates automatically. If you miss a bounty while offline, your board can catch up when its author is back online.
+## Raid night and guild business
+
+- **Guild** keeps the calendar, polls, and bulletin together. Under **Raids** you'll find sessions and attendance. Under **Loot** you'll find wishlists, standings, and loot history.
+- **Alliances** holds guild pacts, allied bulletins, and chat.
+- **Recruitment** and **Leadership** give officers tools for trials, ranks, officer notes, and the audit log. Available actions depend on guild permissions.
+
+Guildmates running EVIL Rises sync automatically at login, every 60 seconds, and when they open the guild window. If you missed a bounty or its withdrawal while offline, your board can catch up when the author is back online.
+
+## Commands and options
+
+- `/evil` or `/evilrises` opens or closes the guild window. Your guild keybind and guild menu button work too.
+- `/evil version` shows the installed addon version.
+- Drag the tabs to put your favorites first. Drag the bottom-right corner to resize the window, then click the padlock beside the close button to lock the size.
+- In **Settings**, adjust alerts and enabled features. For a bug report, choose **Open debug window**, reproduce the problem, then choose **Copy log**.
+
+## Download and install
+
+[Download EVIL Rises for WoW Forever](https://github.com/alienvisa/EVIL-Rises/archive/refs/heads/main.zip). With the game closed, unzip the download and copy the inner `EVILRises` folder into `World of Warcraft/_forever_/Interface/AddOns/`. Check that `AddOns/EVILRises/EVILRises.toc` is in place, then enable **EVIL Rises** in the character screen's AddOns list.
+
+Found a bug or have an idea for the guild? [Open an issue on GitHub](https://github.com/alienvisa/EVIL-Rises/issues).
 
 *Stay ticklin and stay evil.*
