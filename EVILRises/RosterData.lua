@@ -126,6 +126,7 @@ function addon.ReadRoster()
         end
         local primary, all = {}, {}
         local record = synced and synced[engine:KeyOfRosterName(member.name)]
+        member.gear = record and type(record.gear) == "table" and record.gear or nil
         local professions = record and record.professions
         local useSnapshot = not member.isPlayer and type(professions) == "table"
         for id, skill in pairs(useSnapshot and professions or member.skills) do

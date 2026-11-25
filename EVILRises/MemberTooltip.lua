@@ -24,14 +24,36 @@ end
 
 local function readGear(unit)
     local items = {}
-    for index, slot in ipairs(slotNames) do
+    for index in ipairs(slotNames) do
         local link = GetInventoryItemLink(unit, index)
         if link then
-            local name = link:match("|h(.-)|h") or link
-            items[#items + 1] = slot .. "  " .. name
+            items[index] = { link = link, id = tonumber(link:match("item:(%d+)")),
+                name = link:match("|h%[(.-)%]|h") }
+        elseif GetInventoryItemID then
+            local id = GetInventoryItemID(unit, index)
+            if id then items[index] = { id = id } end
         end
     end
-    return #items > 0 and table.concat(items, "\n") or nil
+    return items
+end
+
+local function itemString(item)
+    if type(item) ~= "table" then return end
+    if type(item.link) == "string" then
+        local key = item.link:match("|H(item:%d+[^|]*)|h") or item.link:match("^(item:%d+[^|]*)$")
+        if key then return key end
+    end
+    -- Earlier installs sent the enchant, gems and random suffix separately.
+    local id = tonumber(item.id)
+    if not id or id < 1 or id ~= math.floor(id) then return end
+    if not (item.enchantId or item.gems or item.suffix) then return "item:" .. id end
+    local fields = { "item", id, tonumber(item.enchantId) or 0 }
+    for i = 1, 4 do
+        local gem = type(item.gems) == "table" and item.gems[i]
+        fields[#fields + 1] = type(gem) == "table" and tonumber(gem.id) or 0
+    end
+    fields[#fields + 1] = tonumber(item.suffix) or 0
+    return table.concat(fields, ":")
 end
 
 function addon.CreateMemberTooltip(parent)
@@ -98,6 +120,37 @@ function addon.CreateMemberTooltip(parent)
     local roster, member
     local pending
     local gear, gearMessage
+    local rows, waiting = {}, {}
+
+    local function showItem(row)
+        GameTooltip:SetOwner(row, "ANCHOR_RIGHT")
+        GameTooltip:SetHyperlink(row.itemString)
+        GameTooltip:Show()
+    end
+
+    local function hideItem(row)
+        if GameTooltip:IsOwned(row) then GameTooltip:Hide() end
+    end
+
+    local function gearRow(index)
+        if rows[index] then return rows[index] end
+        local row = CreateFrame("Button", nil, child)
+        row:SetSize(374, 20)
+        local slot = row:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        slot:SetPoint("LEFT")
+        slot:SetText(slotNames[index])
+        local label = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        label:SetPoint("LEFT", 79, 0)
+        label:SetPoint("RIGHT", -2, 0)
+        label:SetJustifyH("LEFT")
+        label:SetWordWrap(false)
+        row.itemName = label
+        row:SetScript("OnEnter", showItem)
+        row:SetScript("OnLeave", hideItem)
+        row:SetScript("OnHide", hideItem)
+        rows[index] = row
+        return row
+    end
 
     local function display()
         local links = addon.GetAltLinks(roster)
@@ -114,7 +167,7 @@ function addon.CreateMemberTooltip(parent)
             table.insert(characters, 1, (main and main.name or "Former member") .. " (main)")
         end
         unlink:SetEnabled(links[member.id] ~= nil)
-        inspect:SetEnabled(not member.isPlayer and member.online and member.guid ~= nil and not pending)
+        inspect:SetEnabled(not member.isPlayer and not member.gear and member.online and member.guid ~= nil and not pending)
         local lines = {
             string.format("Level %s %s  -  %s", member.level or "?", member.class or "Unknown class", member.rank or "Unknown rank"),
             "",
@@ -132,9 +185,42 @@ function addon.CreateMemberTooltip(parent)
         section("Linked characters", table.concat(characters, ", "), "No linked characters")
         section("Raid attendance", nil, "Tracking is not available yet.")
         section("Raid loot history", nil, "Tracking is not available yet.")
-        section("Gear", gear, gearMessage or "Select a nearby guildmate and click Inspect.")
+        local equipment = member.isPlayer and readGear("player") or member.gear or gear
+        lines[#lines + 1] = "|cffffd100Gear|r"
+        if not equipment then
+            lines[#lines + 1] = gearMessage or "No gear shared by this member yet."
+        elseif next(equipment) == nil then
+            lines[#lines + 1] = "No equipped items."
+        end
         text:SetText(table.concat(lines, "\n"))
-        child:SetHeight(math.max(scroll:GetHeight(), text:GetStringHeight() + 4))
+        local offset = text:GetStringHeight() + 4
+        local getInfo = C_Item and C_Item.GetItemInfo or GetItemInfo
+        waiting = {}
+        for index in ipairs(slotNames) do
+            local item = equipment and (equipment[index] or equipment[tostring(index)])
+            local key = itemString(item)
+            if key then
+                local row = gearRow(index)
+                local itemName, quality
+                if getInfo then
+                    local cachedName, _, cachedQuality = getInfo(key)
+                    itemName, quality = cachedName, cachedQuality
+                    if not cachedName then waiting[tonumber(key:match("^item:(%d+)"))] = true end
+                end
+                itemName = itemName or (item.name ~= "" and item.name) or key:match("^item:(%d+)")
+                local color = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[quality or item.quality]
+                row.itemName:SetTextColor(color and color.r or 1, color and color.g or 1, color and color.b or 1)
+                row.itemName:SetText(itemName)
+                row.itemString = key
+                row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -offset)
+                row:Show()
+                if GameTooltip:IsOwned(row) then showItem(row) end
+                offset = offset + row:GetHeight()
+            elseif rows[index] then
+                rows[index]:Hide()
+            end
+        end
+        child:SetHeight(math.max(scroll:GetHeight(), offset))
     end
 
     local function saveLink()
@@ -158,7 +244,12 @@ function addon.CreateMemberTooltip(parent)
     end)
 
     frame:RegisterEvent("INSPECT_READY")
-    frame:SetScript("OnEvent", function(_, _, guid)
+    frame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+    frame:SetScript("OnEvent", function(_, event, guid, success)
+        if event == "GET_ITEM_INFO_RECEIVED" then
+            if success and frame:IsVisible() and waiting[guid] then display() end
+            return
+        end
         if not pending or not member or guid ~= member.guid then
             return
         end
@@ -201,12 +292,6 @@ function addon.CreateMemberTooltip(parent)
     function frame:Open(currentRoster, selected)
         roster, member = currentRoster, selected
         pending, gear, gearMessage = nil, nil, nil
-        if member.isPlayer then
-            gear = readGear("player")
-            gearMessage = "No equipped item links are available."
-        elseif not member.online then
-            gearMessage = "This member is offline."
-        end
         name:SetText(member.name)
         edit:SetText("")
         hint:SetText("Enter a roster name to link an alt.")
@@ -223,7 +308,6 @@ function addon.CreateMemberTooltip(parent)
             return
         end
         roster, member = currentRoster, updated
-        if member.isPlayer then gear = readGear("player") end
         display()
     end
 
