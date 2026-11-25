@@ -3,6 +3,7 @@ local engine = EVRFeatures
 local board = {}
 engine.Bounty = board
 local limit = 20
+local lifetime = 7 * 24 * 60 * 60
 local modes = { kos = "Kill on sight", camp = "Camp", both = "Kill on sight + camp" }
 
 local function owner(name)
@@ -24,10 +25,46 @@ local function refresh()
     if board.page and board.page:IsVisible() then board.page:Refresh() end
 end
 
+local function prune(sheet, now)
+    local removed, earliest = false, nil
+    for i = #sheet.posts, 1, -1 do
+        local expires = sheet.posts[i].time + lifetime
+        if expires <= now then
+            table.remove(sheet.posts, i)
+            removed = true
+        elseif not earliest or expires < earliest then
+            earliest = expires
+        end
+    end
+    return removed, earliest
+end
+
+local nextWake
+local function maintain(data, broadcastOwn)
+    if not data then return end
+    local now, ownKey, earliest = GetServerTime(), owner(), nil
+    for key, sheet in pairs(data) do
+        local removed, expires = prune(sheet, now)
+        if expires and (not earliest or expires < earliest) then earliest = expires end
+        -- Peers expire cached posts independently. Only the author advances the revision.
+        if key == ownKey then
+            if removed then sheet.rev = math.max(now, sheet.rev + 1) end
+            if removed or broadcastOwn then engine.SyncService:Publish("bounty", "board", sheet) end
+        end
+    end
+    if earliest and (not nextWake or earliest < nextWake) then
+        nextWake = earliest
+        C_Timer.After(earliest - now, function()
+            if nextWake ~= earliest then return end
+            nextWake = nil
+            maintain(records())
+            refresh()
+        end)
+    end
+end
+
 function board:Broadcast()
-    local data = records()
-    local sheet = data and data[owner()]
-    if sheet then engine.SyncService:Publish("bounty", "board", sheet) end
+    maintain(records(), true)
 end
 
 local function save(key, sheet)
@@ -102,6 +139,7 @@ function board:Post(target, copper, reason, mode, faction, class)
     if faction ~= "Alliance" and faction ~= "Horde" then return "Choose a faction." end
     local key = owner()
     local sheet = data[key] or { rev = 0, posts = {} }
+    prune(sheet, GetServerTime())
     if #sheet.posts >= limit then return "Withdraw an open bounty before posting another." end
     table.insert(sheet.posts, 1, { target = target, reward = money(copper), copper = copper, class = clean(class, 40), reason = reason, mode = mode,
         faction = faction, time = GetServerTime() })
@@ -139,8 +177,10 @@ function board:Initialize()
                 faction = p.faction, mode = p.mode, time = p.time, copper = copper, class = clean(p.class, 40) }
         end
         data[key] = { rev = rev, posts = posts }
+        maintain(data)
         refresh()
     end)
+    maintain(records())
 end
 
 function board:BuildPage(page)
@@ -240,10 +280,48 @@ function board:BuildPage(page)
     local scroll, child = engine.UI:CreateScrollFrame(page, "EVILRisesBountyScroll")
     scroll:SetPoint("TOPLEFT", 7, -133)
     scroll:SetPoint("BOTTOMRIGHT", -27, 7)
-    local empty = label(child, "No open bounties.", 6, -4, "GameFontDisable")
+    local helpButton = addon.CreateThemeButton(page, "Bounty how-to")
+    helpButton:SetPoint("TOPRIGHT", -8, -103)
+    helpButton:SetSize(118, 23)
+
+    local guide = label(child, table.concat({
+        "|cffffd100Choose a target|r",
+        "Type a name in Bounty Target Name. The board fills in matching player details when available. You can also post a name while the player is offline.",
+        "Already targeting the player? Click Use target. Or right-click the player's portrait and choose Create bounty to open the board with their details filled in.",
+        "",
+        "|cffffd100Post the bounty|r",
+        "Check the faction, choose Kill on sight, Camp, or both, and enter a reward in gold, silver, or copper (at least 1 copper). Add a reason if you like, then click Post bounty.",
+        "",
+        "|cffffd100Claim the reward and close the bounty|r",
+        "To take a bounty, whisper the player listed under Posted by. Agree on what counts as completion and how you'll be paid. Once the deed is done, the two of you confirm completion and arrange payment directly.",
+        "If you posted the bounty, click Withdraw once it's settled. Any bounty still open 7 days after posting is automatically withdrawn, even if the poster is offline.",
+    }, "\n"), 6, -4, "GameFontHighlight")
+    guide:SetJustifyH("LEFT")
+    guide:SetWordWrap(true)
+    guide:SetSpacing(2)
+    guide:Hide()
+    local listings = CreateFrame("Frame", nil, child)
+    listings:SetPoint("BOTTOMRIGHT")
+    local listHeight = 23
+    local function layout()
+        local top = 0
+        if guide:IsShown() then
+            guide:SetWidth(math.max(1, child:GetWidth() - 12))
+            top = math.ceil(guide:GetStringHeight()) + 16
+        end
+        listings:SetPoint("TOPLEFT", 0, -top)
+        child:SetHeight(top + listHeight)
+    end
+    helpButton:SetScript("OnClick", function()
+        guide:SetShown(not guide:IsShown())
+        helpButton:SetText(guide:IsShown() and "Hide how-to" or "Bounty how-to")
+        layout()
+        scroll:SetVerticalScroll(0)
+    end)
+    local empty = label(listings, "No open bounties.", 6, -4, "GameFontDisable")
     local rows = {}
     local function createRow(i)
-        local row = CreateFrame("Frame", nil, child)
+        local row = CreateFrame("Frame", nil, listings)
         row:SetPoint("TOPLEFT", 0, -(i-1)*58)
         row:SetPoint("TOPRIGHT", 0, -(i-1)*58)
         row:SetHeight(58)
@@ -267,7 +345,9 @@ function board:BuildPage(page)
     end
     function page:Refresh()
         local list = {}
-        for author, sheet in pairs(records() or {}) do
+        local data = records()
+        maintain(data)
+        for author, sheet in pairs(data or {}) do
             for index, post in ipairs(sheet.posts) do list[#list+1] = {author=author, post=post, index=index} end
         end
         table.sort(list, function(a,b)
@@ -276,7 +356,8 @@ function board:BuildPage(page)
             return a.index < b.index
         end)
         empty:SetShown(#list == 0)
-        child:SetHeight(math.max(23, #list*58))
+        listHeight = math.max(23, #list*58)
+        layout()
         for i, item in ipairs(list) do
             local row = rows[i] or createRow(i)
             local p = item.post
@@ -289,7 +370,10 @@ function board:BuildPage(page)
         end
         for i=#list+1,#rows do rows[i]:Hide() end
     end
-    scroll:SetScript("OnSizeChanged", function(_, width) child:SetWidth(math.max(1,width)) end)
+    scroll:SetScript("OnSizeChanged", function(_, width)
+        child:SetWidth(math.max(1, width))
+        layout()
+    end)
     page:SetScript("OnShow", page.Refresh)
     page:Refresh()
 end
