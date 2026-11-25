@@ -17,8 +17,9 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(release_level(f'{kind}: update addon'), 'patch')
         self.assertEqual(release_level('fix!: change format'), 'major')
         self.assertEqual(release_level('fix: change format', 'BREAKING CHANGE: saved data'), 'major')
-        with self.assertRaises(ValueError):
-            release_level('Update addon')
+        self.assertEqual(release_level('Update README.md'), 'patch')
+        self.assertEqual(release_level(''), 'patch')
+        self.assertEqual(release_level('Update addon', 'BREAKING CHANGE: saved data'), 'major')
 
     def test_versions_reset_lower_components(self):
         self.assertEqual(bump('v0.4.4', 'patch'), 'v0.4.5')
@@ -42,7 +43,8 @@ class ReleaseTests(unittest.TestCase):
             git('config', 'user.name', 'Release Test')
             git('commit', '--allow-empty', '-m', 'Historical release')
             git('tag', 'v0.4.4')
-            git('commit', '--allow-empty', '-m', 'ci: add workflows')
+            git('commit', '--allow-empty', '-m', 'Update README.md')
+            git('commit', '--allow-empty', '-m', 'Update README.md')
             self.assertEqual(version(), 'v0.4.5')
             base = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=repo, text=True).strip()
             git('switch', '-c', 'feature')
@@ -54,13 +56,14 @@ class ReleaseTests(unittest.TestCase):
             self.assertEqual(version(), 'v0.5.0')
             git('tag', 'v0.5.0')
             self.assertEqual(version(), 'v0.5.0')
+            git('branch', 'custom-merge')
             git('commit', '--allow-empty', '-m', 'Edited squash title')
-            with self.assertRaises(subprocess.CalledProcessError) as failure:
-                subprocess.run(
-                    [sys.executable, '-B', '-m', 'scripts.release'], cwd=repo, text=True,
-                    env={**os.environ, 'PYTHONPATH': str(root)}, check=True, capture_output=True,
-                )
-            self.assertIn('Preserve the PR title when merging', failure.exception.stderr)
+            self.assertEqual(version(), 'v0.5.1')
+            git('switch', 'custom-merge')
+            git('commit', '--allow-empty', '-m', 'Update documentation')
+            git('switch', '--detach', 'v0.5.0')
+            git('merge', '--no-ff', 'custom-merge', '-m', 'Merge documentation changes')
+            self.assertEqual(version(), 'v0.5.1')
 
     def test_version_sync_does_not_allocate_another_release(self):
         root = Path(__file__).resolve().parents[1]
