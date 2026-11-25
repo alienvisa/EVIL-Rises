@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from zipfile import BadZipFile
 
 from scripts.package_release import build_archive, validate_archive
@@ -53,6 +54,13 @@ def stable_tags():
     ]
 
 
+def release_source(tag):
+    source = git("rev-parse", f"refs/tags/{tag}^{{commit}}")
+    if source not in git("rev-list", "--first-parent", "HEAD").splitlines():
+        raise ValueError(f"{tag} is outside HEAD's first-parent history")
+    return source
+
+
 def next_tag(tags):
     if not tags:
         raise ValueError("Expected an existing stable tag to seed versioning")
@@ -63,8 +71,7 @@ def next_tag(tags):
         return existing.pop()
 
     latest = tags[0]
-    if git("rev-parse", f"{latest}^{{commit}}") not in git("rev-list", "--first-parent", "HEAD").splitlines():
-        raise ValueError(f"{latest} is outside HEAD's first-parent history")
+    release_source(latest)
     levels = []
     for sha in git("rev-list", "--first-parent", f"{latest}..HEAD").splitlines():
         parents, subject, body = git("show", "-s", "--format=%P%x00%s%x00%b", sha).split("\0", 2)
@@ -83,22 +90,36 @@ def next_tag(tags):
     return bump(latest, max(levels, key=LEVELS.index))
 
 
+def build_at_tag(tag, directory):
+    with tempfile.TemporaryDirectory(prefix="evil-rises-release-") as temp:
+        checkout = Path(temp) / "source"
+        # BigWigs recognizes a standalone .git directory in the packaging checkout.
+        git("clone", "--quiet", "--no-checkout", ".", str(checkout))
+        git("-C", str(checkout), "remote", "set-url", "origin", git("remote", "get-url", "origin"))
+        git("-C", str(checkout), "checkout", "--quiet", "--detach", f"refs/tags/{tag}")
+        return build_archive(checkout, tag, directory)
+
+
 def prepare(github, directory):
     tags = stable_tags()
-    tag = next_tag(tags)
-    releases = github.releases()
+    if not tags:
+        raise ValueError("Expected an existing stable tag to seed versioning")
     latest = tags[0]
-    if tag not in tags:
-        previous = releases.get(latest)
-        if not previous or previous["draft"] or previous["prerelease"]:
-            raise ValueError(f"Finish release {latest} before allocating a new version")
-        if latest != LEGACY_RELEASE:
-            previous_assets = {
-                asset["name"] for asset in previous["assets"] if asset["state"] == "uploaded"
-            }
-            if not {f"EVILRises-{latest}.zip", METADATA, RECEIPT} <= previous_assets:
-                raise ValueError(f"Release {latest} is missing published assets")
+    release_source(latest)
+    releases = github.releases()
+    previous = releases.get(latest)
+    if latest == LEGACY_RELEASE and (not previous or previous["draft"]):
+        raise ValueError(f"Expected the published baseline release {LEGACY_RELEASE}")
+    if previous and previous["prerelease"]:
+        raise ValueError(f"{latest} is a prerelease")
+    if previous and not previous["draft"] and latest != LEGACY_RELEASE:
+        previous_assets = {
+            asset["name"] for asset in previous["assets"] if asset["state"] == "uploaded"
+        }
+        if not {f"EVILRises-{latest}.zip", METADATA, RECEIPT} <= previous_assets:
+            raise ValueError(f"Release {latest} is missing published assets")
 
+    tag = latest if not previous or previous["draft"] else next_tag(tags)
     directory.mkdir(parents=True, exist_ok=True)
     entry = releases.get(tag)
     release = GitHubRelease(github, entry) if entry else None
@@ -113,12 +134,12 @@ def prepare(github, directory):
             raise ValueError(f"The draft {tag} has assets but is missing {filename}")
         if tag not in tags:
             git("tag", tag)
-        package = build_archive(Path.cwd(), tag, directory)
+        package = build_at_tag(tag, directory)
         if not release:
+            source = release_source(tag)
             if tag not in tags:
-                github.reserve(tag, git("rev-parse", "HEAD"))
-            github.create_draft(tag, package.changelog)
-            release = GitHubRelease(github, github.releases()[tag])
+                github.reserve(tag, source)
+            release = GitHubRelease(github, github.create_draft(tag, source, package.changelog))
         release.upload(package.archive)
 
     metadata = release.download(METADATA, directory)
@@ -127,7 +148,7 @@ def prepare(github, directory):
         release.upload(write_json(directory / METADATA, expected))
     elif read_json(metadata) != expected:
         raise ValueError("release.json does not match the staged ZIP")
-    return tag
+    return release
 
 
 def curseforge_project_id():
@@ -137,12 +158,14 @@ def curseforge_project_id():
     return int(project_id)
 
 
-def publish(github, tag, directory, target):
-    source = git("rev-parse", "HEAD")
-    if not TAG.fullmatch(tag) or git("rev-parse", f"refs/tags/{tag}^{{commit}}") != source:
-        raise ValueError("The release tag must point to the checked-out commit")
+def publish(github, tag, release_id, directory, target):
+    if not TAG.fullmatch(tag) or not re.fullmatch(r"[1-9][0-9]*", release_id):
+        raise ValueError("Expected a stable tag and numeric GitHub release ID")
+    source = release_source(tag)
     project_id = curseforge_project_id()
-    release = GitHubRelease(github, github.releases()[tag])
+    release = github.release(release_id)
+    if release.tag != tag:
+        raise ValueError(f"GitHub release {release_id} belongs to {release.tag}, expected {tag}")
     archive = release.download(f"EVILRises-{tag}.zip", directory)
     metadata = release.download(METADATA, directory)
     if not archive or not metadata:
@@ -187,11 +210,14 @@ def main():
             github = GitHub(os.environ["GITHUB_REPOSITORY"])
             if args.command == "package":
                 curseforge_project_id()
-                tag = prepare(github, RELEASE_DIRECTORY)
+                release = prepare(github, RELEASE_DIRECTORY)
                 with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
-                    stream.write(f"tag={tag}\n")
+                    stream.write(f"tag={release.tag}\nrelease_id={release.id}\n")
             else:
-                publish(github, os.environ["RELEASE_TAG"], RELEASE_DIRECTORY, args.command)
+                publish(
+                    github, os.environ["RELEASE_TAG"], os.environ["RELEASE_ID"],
+                    RELEASE_DIRECTORY, args.command,
+                )
     except (ValueError, OSError, KeyError, BadZipFile, subprocess.SubprocessError) as error:
         parser.exit(1, f"{error}\n")
 
