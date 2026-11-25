@@ -26,7 +26,7 @@ Anchor each tab’s bottom-left to the previous visible tab’s bottom-right wit
 | Sortable headings | Use `CreateRosterHeader` and `SetRosterHeaderSelected`. The 22-unit header reads as one dark band. Inactive headings have gold labels and a subdued 1-unit bottom rule. Only the sorted column gets the amber sheen, bright underline, pale label, and direction arrow. |
 | Rows | Use the roster’s 23-unit rhythm for comparably dense tables. Alternate `colors.row` and `colors.alternateRow` over the opaque inset. Align each cell to the same column geometry as its heading when the window resizes. |
 | Text | Use the client’s `GameFontNormal` family for gold labels, `GameFontHighlight` for readable values and member names, and their small variants for compact headings and cells. Offline names are muted. Keep roster cells on one line. |
-| Guild identity and status | Reserve olive and lemon accents for guild identity and selected controls. Online status uses a solid green dot and offline status uses a hollow circle. Keep the status, class icon, rank crown, and member name in that order. Use the existing gold GM and silver officer treatments. |
+| Guild identity and status | Reserve olive and lemon accents for guild identity and selected controls. Online status uses a solid green dot and offline status uses a hollow circle. Keep the status, class icon, rank crown, and member name in that order. Use the filled gold crown for the guild master and the hollow gold crown for ranks with officer permissions. |
 
 ## Applying the theme to a new page
 

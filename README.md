@@ -23,6 +23,7 @@ Open a guildmate's roster entry to see their last shared equipment, even while t
 
 ## Raid night and guild business
 
+- **Chat** opens guild chat. Members who can read officer chat get a second channel there. A filled gold roster crown marks the guild master, and a gold outline marks ranks with officer permissions.
 - **Guild** keeps the calendar, polls, and bulletin together. Under **Raids** you'll find sessions and attendance. Under **Loot** you'll find wishlists, standings, and loot history.
 - **Alliances** holds guild pacts, allied bulletins, and chat.
 - **Recruitment** and **Leadership** give officers tools for trials, ranks, officer notes, and the audit log. Available actions depend on guild permissions.

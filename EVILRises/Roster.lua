@@ -96,7 +96,6 @@ function addon.CreateRoster(page, frame)
         row.class = smallIcon(row, 17, 32)
         row.class:SetTexture(classSheet)
         row.crown = smallIcon(row, 16, 61)
-        row.crown:SetTexture("Interface\\GroupFrame\\UI-Group-LeaderIcon")
         local button = CreateFrame("Button", nil, row)
         row.nameButton = button
         button:SetHeight(rowHeight)
@@ -132,13 +131,9 @@ function addon.CreateRoster(page, frame)
                 local coords = CLASS_ICON_TCOORDS and CLASS_ICON_TCOORDS[member.classFile]
                 if coords then row.class:SetTexCoord(unpack(coords)) end
                 row.class:SetShown(coords ~= nil)
-                local officer = member.rankIndex == 1 or (member.rank and member.rank:lower() == "officer")
-                row.crown:SetShown(member.rankIndex == 0 or not not officer)
-                if member.rankIndex == 0 then
-                    row.crown:SetVertexColor(1, 0.92, 0.55)
-                else
-                    row.crown:SetVertexColor(0.74, 0.86, 0.93)
-                end
+                row.crown:SetShown(member.rankIndex == 0 or member.officerCrown == true)
+                row.crown:SetTexture(member.rankIndex == 0 and "Interface\\GroupFrame\\UI-Group-LeaderIcon"
+                    or statusBase .. "OfficerCrown")
                 local nameColor = member.online and 0.97 or 0.70
                 row.texts[4]:SetTextColor(nameColor, nameColor, nameColor)
                 row.texts[4]:SetText(addon.FindRosterMember(roster, member.shortName) and member.shortName or member.name)
@@ -272,6 +267,7 @@ function addon.CreateRoster(page, frame)
     end
 
     page:RegisterEvent("GUILD_ROSTER_UPDATE")
+    EVRFeatures.Compat.RegisterEvent(page, "GUILD_RANKS_UPDATE", true)
     page:RegisterEvent("GUILD_TRADESKILL_UPDATE")
     page:RegisterEvent("PLAYER_GUILD_UPDATE")
     page:RegisterEvent("PLAYER_TARGET_CHANGED")

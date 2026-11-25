@@ -1,5 +1,5 @@
 ----------------------------------------------------------------------
--- EVIL Rises - Guild chat, kept for the Guild tab (issue #124)
+-- EVIL Rises - Guild and officer chat
 --
 -- Every line of /g, the player's own included, goes into the guild's own
 -- log, so the Chat sub-tab can show what was said before the window opened
@@ -8,8 +8,7 @@
 --
 -- Where the server keeps the guild's chat (WoW: Forever, issue #126), the tab
 -- shows that instead: it also holds what was said while the player was away,
--- and every channel of the guild, Officer and the ones it made, gets a tab.
--- Only /g is ever written to disk.
+-- with separate feeds for guild and officer chat. Only /g is written to disk.
 --
 -- A channel is { id, name, kind } from Compat.GuildChatStreams; nil means /g.
 --
@@ -44,10 +43,23 @@ function GuildChat:_Notify()
     end
 end
 
--- The guild's channels this player can read; nil where the server keeps none, or
--- in a chat lockdown, when the list arrives secret.
+-- Prefer the officer stream for its history. A rank with listen permission can
+-- also follow live /o events on clients that expose no officer stream.
+local guildStream = { kind = "guild" }
+local liveOfficer = { kind = "officer" }
+function GuildChat:OfficerStream()
+    if not EVRFeatures:IsOnGuildDB() then return end
+    local rank = select(3, GetGuildInfo("player"))
+    local flags = EVRFeatures.Compat.GuildRankFlags(rank)
+    if rank ~= 0 and flags and flags[3] == false then return end
+    for _, stream in ipairs(EVRFeatures.Compat.GuildChatStreams() or {}) do
+        if stream.kind == "officer" then return stream end
+    end
+    if rank == 0 or (flags and flags[3] == true) then return liveOfficer end
+end
+
 function GuildChat:Streams()
-    return (EVRFeatures.Compat.GuildChatStreams())
+    return { guildStream, self:OfficerStream() }
 end
 
 -- In a chat lockdown nothing of the server's can be read: a feed keeps what it shows.
@@ -64,10 +76,16 @@ end
 -- server has nothing loaded yet: never both, so no line shows twice. Any other
 -- channel only ever has the server's.
 function GuildChat:Entries(stream)
+    local live = self.officerGuild == EVRFeatures.guildKey and self.officerLog
+    if not isGuild(stream) then
+        local allowed = self:OfficerStream()
+        if not allowed or allowed.id ~= stream.id then return {} end
+        if not stream.id then return live or {} end
+    end
     local server, locked = EVRFeatures.Compat.GuildChatHistory(self.MAX_LOG, stream and stream.id)
     if locked then return nil end
     if not isGuild(stream) then
-        return server or {}, true
+        return server and #server > 0 and server or live or {}, true
     end
     if server and #server > 0 then
         return GuildChat.Merge(server, self:AlliedLog(), self.MAX_LOG), true
@@ -136,6 +154,11 @@ end
 GuildChat.watching = {}
 
 function GuildChat:Watch(on, stream)
+    if not isGuild(stream) and not stream.id then return end
+    if on and not isGuild(stream) then
+        local allowed = self:OfficerStream()
+        if not allowed or allowed.id ~= stream.id then return end
+    end
     local id = (not isGuild(stream)) and stream.id or nil
     local key = id or "guild"
     local was = self.watching[key] or 0
@@ -162,13 +185,22 @@ local function classOf(guid)
     return class
 end
 
-function GuildChat:_OnMessage(msg, author, guid)
+function GuildChat:_OnMessage(msg, author, guid, officer)
     -- Chat in lockdown on Forever: neither the line nor its speaker is readable.
     if EVRFeatures.Compat.IsSecret(msg, author) or not msg or not author then return end
     -- The data resolved at login for a guildless character is shared by every guildless
     -- character on the realm: a guild joined since then is not written into it.
-    if not EVRFeatures.isGuilded then return end
-    local log = self:Log()
+    if not EVRFeatures:IsOnGuildDB() then return end
+    local log
+    if officer then
+        if not self:OfficerStream() then return end
+        if self.officerGuild ~= EVRFeatures.guildKey then self.officerLog = {} end
+        self.officerGuild = EVRFeatures.guildKey
+        self.officerLog = self.officerLog or {}
+        log = self.officerLog
+    else
+        log = self:Log()
+    end
     log[#log + 1] = {
         t = GetServerTime(),
         n = (Ambiguate and Ambiguate(author, "guild")) or author,
@@ -199,6 +231,7 @@ function GuildChat:Send(text, stream)
         -- box is not one of the chat frame's, so the hook there never sees it.
         if EVRFeatures.AllianceLink then EVRFeatures.AllianceLink:OnPlayerChat("GUILD", clean) end
     elseif stream.kind == "officer" then
+        if not self:OfficerStream() or EVRFeatures.Compat.CanSpeakOfficerChat() == false then return false end
         SendChatMessage(clean, "OFFICER")
     else
         return EVRFeatures.Compat.SendGuildStream(stream.id, clean)
@@ -209,6 +242,10 @@ end
 function GuildChat:Initialize()
     local f = CreateFrame("Frame")
     EVRFeatures.Compat.RegisterEvent(f, "CHAT_MSG_GUILD")
+    EVRFeatures.Compat.RegisterEvent(f, "CHAT_MSG_OFFICER")
+    for _, event in ipairs({ "GUILD_ROSTER_UPDATE", "PLAYER_GUILD_UPDATE", "GUILD_RANKS_UPDATE" }) do
+        EVRFeatures.Compat.RegisterEvent(f, event, true)
+    end
     -- The server's channels: a new line, older ones arriving, a channel made or
     -- removed, the list arriving. Absent where there are none.
     EVRFeatures.Compat.RegisterEvent(f, "CLUB_MESSAGE_ADDED", true)
@@ -217,10 +254,17 @@ function GuildChat:Initialize()
     EVRFeatures.Compat.RegisterEvent(f, "CLUB_STREAM_REMOVED", true)
     EVRFeatures.Compat.RegisterEvent(f, "CLUB_STREAMS_LOADED", true)
     f:SetScript("OnEvent", function(_, event, ...)
-        if event == "CHAT_MSG_GUILD" then
+        if event == "GUILD_ROSTER_UPDATE" or event == "PLAYER_GUILD_UPDATE" or event == "GUILD_RANKS_UPDATE" then
+            if GuildChat.officerGuild ~= EVRFeatures.guildKey or not GuildChat:OfficerStream() then
+                GuildChat.officerLog, GuildChat.officerGuild = nil, nil
+            end
+            GuildChat:_Notify()
+            return
+        end
+        if event == "CHAT_MSG_GUILD" or event == "CHAT_MSG_OFFICER" then
             local msg, author = ...
             local guid = select(12, ...)
-            EVRFeatures:SafeCall(function() GuildChat:_OnMessage(msg, author, guid) end)
+            EVRFeatures:SafeCall(function() GuildChat:_OnMessage(msg, author, guid, event == "CHAT_MSG_OFFICER") end)
             return
         end
         local clubId = ...

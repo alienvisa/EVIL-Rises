@@ -574,32 +574,27 @@ end
 ----------------------------------------------------------------------
 -- Guild chat feed (issues #124, #126), kept by Modules/GuildChat.lua. Laid out
 -- like the alliance feed: one card per run of lines from one speaker, newest at
--- the bottom, a box underneath, and a tab per channel of the guild. Guild > Chat
--- and the Now cards both build it.
+-- the bottom and a composer for the selected channel.
 ----------------------------------------------------------------------
 local CLASS_TEX = "Interface\\WorldStateFrame\\Icons-Classes"
 local feeds = 0   -- each feed's scroll frame needs its own global name
 
 -- A channel is { id, name, kind }; nil, and the Guild tab, mean /g.
 local function idOf(stream)
-    return (stream and stream.kind ~= "guild") and stream.id or nil
+    return stream and stream.kind == "officer" and (stream.id or "officer") or nil
 end
 
 local function streamLabel(stream)
-    if stream.kind == "guild" then return L["Guild"] end
-    if stream.kind == "officer" then return L["Officers"] end
-    return stream.name or "?"
+    return stream.kind == "officer" and L["Officer chat"] or L["Guild chat"]
 end
 
--- `top`: room over the feed. The Guild tab leaves GAP under its sub-tab bar, as on every sub-tab
--- (#371); a Now card gives none.
 function EVRFeatures:CreateGuildChatFeed(panel, top)
     local GC = EVRFeatures.GuildChat
-    local current   -- the channel open; nil is /g
+    local current, watching, guildKey   -- nil channel is /g
     top = top or 0
     feeds = feeds + 1
 
-    -- The channel tabs, shown only when there is more than /g to choose from.
+    -- Always show the guild channel; the second tab follows officer listen access.
     local bar = CreateFrame("Frame", nil, panel)
     bar:SetPoint("TOPLEFT", 0, -top)
     bar:SetSize(400, TAB_H)
@@ -639,37 +634,36 @@ function EVRFeatures:CreateGuildChatFeed(panel, top)
     local waiting = false     -- a look after a chat lockdown is queued
 
     -- Another channel: the server stops being told about the old one, and is told about this one.
+    local function switchChannel(stream)
+        if watching then GC:Watch(false, current) end
+        current = idOf(stream) and stream or nil
+        input:SetText("")
+        input:ClearFocus()
+        if watching then GC:Watch(true, current) end
+        pinBottom = true
+    end
+
     local function open(stream)
         -- In a chat lockdown the feed cannot be redrawn: a channel changed then would send Enter
         -- somewhere other than what is on screen, an officer's line to the whole guild.
-        if GC:Locked() or idOf(stream) == idOf(current) then return end
-        GC:Watch(false, current)
-        current = idOf(stream) and stream or nil
-        GC:Watch(true, current)
-        pinBottom = true
+        if GC:Locked() then return false end
+        if stream and stream.kind == "officer" then
+            stream = GC:OfficerStream()
+            if not stream then return false end
+        end
+        if idOf(stream) ~= idOf(current) then switchChannel(stream) end
         refresh()
+        return true
     end
 
     local function layoutTabs()
-        local streams = GC:Streams()
-        local list = (streams and #streams > 1) and streams or nil
+        local list = GC:Streams()
         -- The channel open is gone (removed, or no longer listed to this player): back to /g.
         if current then
-            local still
-            for _, s in ipairs(list or {}) do
-                if s.id == current.id then still = s end
-            end
-            if not still then
-                -- Hidden, the feed already stopped watching it.
-                local watched = panel:IsVisible()
-                if watched then GC:Watch(false, current) end
-                current = nil
-                if watched then GC:Watch(true, nil) end
-            end
+            if idOf(list[2]) ~= idOf(current) then switchChannel(list[2]) end
         end
-        bar:SetShown(list ~= nil)
-        anchorHolder(list ~= nil)
-        if not list then return end
+        bar:Show()
+        anchorHolder(true)
         local shown = {}
         for i, s in ipairs(list) do
             local t = tabs[i]
@@ -717,9 +711,17 @@ function EVRFeatures:CreateGuildChatFeed(panel, top)
     end
 
     refresh = function()
+        if guildKey ~= EVRFeatures.guildKey then
+            guildKey = EVRFeatures.guildKey
+            switchChannel(nil)
+        end
         -- In a chat lockdown the server's lines and channels arrive secret: keep what is drawn,
         -- and look again every 2 seconds while on screen, since no event says the lockdown lifted.
         if GC:Locked() then
+            bar:Hide()
+            holder:Hide()
+            input:Hide()
+            sendBtn:Hide()
             if not waiting then
                 waiting = true
                 EVRFeatures.Compat.After(2, function()
@@ -732,9 +734,15 @@ function EVRFeatures:CreateGuildChatFeed(panel, top)
         local follow = pinBottom or scrolling or scroll:GetVerticalScroll() >= scroll:GetVerticalScrollRange() - 4
         pinBottom = false
         layoutTabs()
+        holder:Show()
+        input:Show()
+        sendBtn:Show()
+        local writable = not current or EVRFeatures.Compat.CanSpeakOfficerChat() ~= false
+        input:SetEnabled(writable)
+        sendBtn:SetEnabled(writable)
         -- Born 0 wide (CreateScrollFrame sizes it before layout), so re-set on every draw.
         content:SetWidth(math.max(holder:GetWidth() - 12, 1))
-        local log = GC:Entries(current)
+        local log = GC:Entries(current) or {}
         local classOf = {}
         for _, e in ipairs(log) do classOf[e.n] = e.c or classOf[e.n] end
         local groups = EVRFeatures.AllianceChat.GroupLog(log, EVRFeatures.AllianceChat.GROUP_WINDOW)
@@ -773,6 +781,7 @@ function EVRFeatures:CreateGuildChatFeed(panel, top)
         end
         for i = #groups + 1, #blocks do blocks[i].card:Hide() end
         empty:SetShown(#groups == 0)
+        empty:SetText(current and L["No officer chat yet."] or L["No guild chat yet."])
         if #groups == 0 then y = 20 end
         content:SetHeight(math.max(y, 1))
         -- A frame later: the scroll range follows the new height only after it lands.
@@ -787,6 +796,7 @@ function EVRFeatures:CreateGuildChatFeed(panel, top)
 
     -- Enter and the click are the player's own key press, which chat needs on Forever.
     local function doSend()
+        if guildKey ~= EVRFeatures.guildKey then refresh(); return end
         local ok, why = GC:Send(input:GetText(), current)
         if ok then
             input:SetText("")
@@ -801,12 +811,25 @@ function EVRFeatures:CreateGuildChatFeed(panel, top)
         if panel:IsVisible() then refresh() end
     end)
     -- The server is told a channel is being read only while the feed is on screen.
-    panel:HookScript("OnShow", function() pinBottom = true; GC:Watch(true, current) end)
-    panel:HookScript("OnHide", function() GC:Watch(false, current) end)
+    local function show()
+        pinBottom = true
+        refresh()
+        if not watching then watching = true; GC:Watch(true, current) end
+    end
+    panel:HookScript("OnShow", show)
+    panel:HookScript("OnHide", function()
+        if watching then GC:Watch(false, current); watching = false end
+    end)
+    panel.SelectSub = function(key)
+        if key == "guild" then return open(nil) end
+        if key == "officer" then return open({ kind = "officer" }) end
+        return false
+    end
     -- The cards are as wide as the view: a resized window lays them out again, once a frame.
     UI:MakeResponsive(holder, function()
         if panel:IsVisible() then refresh() end
     end)
+    if panel:IsVisible() then show() end
     return refresh
 end
 
@@ -824,7 +847,6 @@ local HUB_SUBTABS = {
     { key = "rules",    label = L["Rules"] },
     { key = "cta",      label = L["Call to Arms"] },
     { key = "polls",    label = L["Polls"] },
-    { key = "chat",     label = L["Chat"] },
     { key = "journal",      label = L["Journal"],      feature = "journal" },
 }
 
@@ -855,7 +877,6 @@ function EVRFeatures:CreateGuildHub(parent, _mainFrame)
         calendar = function(p) return EVRFeatures:CreateCalendarSub(p) end,
         activity = BuildActivitySub, bulletin = BuildBulletinSub, polls = BuildPollsSub, cta = BuildCallToArmsSub,
         rules = BuildGuildRulesSub,
-        chat = function(p) return EVRFeatures:CreateGuildChatFeed(p, GAP) end,
         journal = function(p) return EVRFeatures:CreateJournalPanel(p) end,
     }
     local failed = {}

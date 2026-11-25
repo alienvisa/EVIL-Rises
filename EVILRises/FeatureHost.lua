@@ -4,7 +4,7 @@ local ui = engine.UI
 
 local ids = {
     Roster = "roster", Professions = "recipes",
-    Guild = "guild", Bounty = "bounty", Alliances = "alliance", Recruitment = "recruitment",
+    Guild = "guild", Chat = "chat", Bounty = "bounty", Alliances = "alliance", Recruitment = "recruitment",
     Leadership = "management", Settings = "settings",
 }
 local refreshers = {}
@@ -60,6 +60,7 @@ function addon.AttachFeaturePage(page, frame, name)
 end
 
 function ui:OpenWindow(id, sub, filter)
+    if id == "guild" and sub == "chat" then id, sub = "chat", filter end
     if not id or id == "home" then id = "roster" end
     local def = self:GetFeature(id)
     if not engine.db or not self:IsFeatureAllowed(def) then return false end
