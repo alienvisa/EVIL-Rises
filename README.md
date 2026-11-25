@@ -2,6 +2,8 @@
 
 EVIL Rises is the guild addon for **EVIL: Every Villian Is Lemons**. Open your usual guild window or type `/evil` to see the guild message of the day and who's online. From the same window you can find a crafter, check the raid calendar, or put a bounty on an enemy player.
 
+Check us out on CurseForge: [Evil Rises](https://www.curseforge.com/wow/addons/evil-rises)
+
 ## Got ganked? Put a price on their head
 
 Right-click the enemy player and choose **Create bounty**. The board opens with their name, class, and faction filled in. Lost sight of them on the corpse run? Open **Bounty** and type their name yourself.
