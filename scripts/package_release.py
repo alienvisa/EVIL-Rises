@@ -62,9 +62,7 @@ def validate_archive(archive, tag):
     return Package(archive, int(interfaces[0]), changelog, checksum)
 
 
-def build_archive(root, tag, directory):
-    toc = root / TOC
-    original = toc.read_bytes()
+def stamp_toc(original, tag):
     stamped, replacements = re.subn(
         rb"(?m)^## Version: [0-9]+\.[0-9]+\.[0-9]+(?=\r?$)",
         f"## Version: {tag[1:]}".encode("ascii"),
@@ -72,7 +70,13 @@ def build_archive(root, tag, directory):
     )
     if replacements != 1:
         raise ValueError("Expected one numeric version in EVILRises.toc")
+    return stamped
 
+
+def build_archive(root, tag, directory):
+    toc = root / TOC
+    original = toc.read_bytes()
+    stamped = stamp_toc(original, tag)
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=True)
     archive = directory / f"EVILRises-{tag}.zip"

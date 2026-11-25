@@ -19,7 +19,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Validate PR title
+      - name: Show release bump from PR title
         if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}

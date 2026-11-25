@@ -48,10 +48,11 @@ Found a bug or have an idea for the guild? [Open an issue on GitHub](https://git
 ## Contributing and releases
 
 Use a Conventional Commit PR title, such as `feat(roster): add filters` or
-`fix: repair guild sync`. Prefer squash merging with the PR title as the commit
-subject. If you use GitHub's **Create a merge commit** option, keep the default
-merge subject and the PR title on the first line of the commit body. CI checks the
-title, Lua 5.1 syntax, guild sync, versioning, release recovery, and the install ZIP.
+`fix: repair guild sync`, to choose the release bump. Prefer squash merging with
+the PR title as the commit subject. GitHub's default merge commit also carries
+the PR title on the first line of its body. PR CI previews the bump from the
+title and checks Lua 5.1 syntax, guild sync, versioning, release recovery, and
+the install ZIP.
 
 In GitHub, enable squash merging, set the default squash commit message to
 **Pull request title and description**, and disable merge commits and rebase
@@ -65,9 +66,17 @@ CurseForge and publishes the GitHub draft after validating the upload receipt
 and ZIP checksum. Set the `CF_PROJECT_ID` repository variable and the
 `CF_API_TOKEN` secret before enabling publishing.
 
-Pushes to `main` trigger publishing after CI passes. `feat` bumps minor, a title with `!`
-or a `BREAKING CHANGE:` footer bumps major, and other allowed types bump patch.
-The largest bump applies if several commits accumulated since the last release.
+Pushes to `main` trigger publishing after CI passes. The latest stable Git tag
+sets the version baseline. A Conventional Commit with `!` or a `BREAKING CHANGE:`
+footer selects a major bump. A `feat` title selects a minor bump. Other messages,
+including ordinary commit titles, default to patch. The largest bump applies if
+several commits accumulated since the last release.
+
+After publishing, GitHub Actions opens or updates a PR to sync the version in
+`EVILRises/EVILRises.toc`. Enable **Allow GitHub Actions to create and approve pull
+requests** in **Settings → Actions → General**. Approve the bot PR's CI run if
+GitHub requires it, then merge the PR with its original title. A merge that only
+syncs the TOC version does not publish another release.
 
 ### Recovering a release
 

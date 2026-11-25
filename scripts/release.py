@@ -1,6 +1,7 @@
-"""Validate commit titles and release EVIL Rises for WoW Forever."""
+"""Calculate release versions and publish EVIL Rises for WoW Forever."""
 
 import argparse
+from contextlib import suppress
 import os
 from pathlib import Path
 import re
@@ -8,7 +9,7 @@ import subprocess
 import tempfile
 from zipfile import BadZipFile
 
-from scripts.package_release import build_archive, validate_archive
+from scripts.package_release import TOC, build_archive, stamp_toc, validate_archive
 from scripts.publish_release import (
     METADATA, RECEIPT, CurseForge, GitHub, GitHubRelease, publish_curseforge, publish_github,
     read_json, write_json,
@@ -21,6 +22,7 @@ TITLE = re.compile(
 )
 GITHUB_MERGE_SUBJECT = re.compile(r"Merge pull request #[1-9][0-9]* from \S+/\S+")
 TAG = re.compile(r"v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+TOC_SYNC_TITLE = re.compile(r"chore\(release\): sync TOC to (v\S+)(?: \(#[1-9][0-9]*\))?")
 LEVELS = ("patch", "minor", "major")
 LEGACY_RELEASE = "v0.4.4"
 RELEASE_DIRECTORY = Path(".release").resolve()
@@ -28,11 +30,9 @@ RELEASE_DIRECTORY = Path(".release").resolve()
 
 def release_level(title, body=""):
     match = TITLE.fullmatch(title)
-    if not match:
-        raise ValueError(f"Expected a Conventional Commit title, got {title!r}")
-    if match[2] or re.search(r"^BREAKING[ -]CHANGE: \S", body, re.MULTILINE):
+    if (match and match[2]) or re.search(r"^BREAKING[ -]CHANGE: \S", body, re.MULTILINE):
         return "major"
-    return "minor" if match[1] == "feat" else "patch"
+    return "minor" if match and match[1] == "feat" else "patch"
 
 
 def bump(tag, level):
@@ -61,6 +61,20 @@ def release_source(tag):
     return source
 
 
+def is_toc_sync(sha, subject, tags):
+    match = TOC_SYNC_TITLE.fullmatch(subject)
+    if not match or match[1] not in tags:
+        return False
+    changed = git("diff", "--no-renames", "--name-status", f"{sha}^", sha)
+    if changed != f"M\t{TOC.as_posix()}":
+        return False
+    before = subprocess.check_output(["git", "show", f"{sha}^:{TOC.as_posix()}"])
+    after = subprocess.check_output(["git", "show", f"{sha}:{TOC.as_posix()}"])
+    with suppress(ValueError):
+        return before != after and stamp_toc(before, match[1]) == after
+    return False
+
+
 def next_tag(tags):
     if not tags:
         raise ValueError("Expected an existing stable tag to seed versioning")
@@ -79,15 +93,9 @@ def next_tag(tags):
         if parent_count == 2 and GITHUB_MERGE_SUBJECT.fullmatch(subject):
             # GitHub puts the PR title on the first line of the default merge body.
             subject = body.lstrip().partition("\n")[0]
-        elif parent_count != 1:
-            raise ValueError(f"{sha[:12]} is not a standard GitHub PR merge. Use squash merging.")
-        try:
+        if not is_toc_sync(sha, subject, tags):
             levels.append(release_level(subject, body))
-        except ValueError as error:
-            raise ValueError(
-                f"{sha[:12]}: {error}. Preserve the PR title when merging."
-            ) from error
-    return bump(latest, max(levels, key=LEVELS.index))
+    return bump(latest, max(levels, key=LEVELS.index)) if levels else None
 
 
 def build_at_tag(tag, directory):
@@ -120,6 +128,8 @@ def prepare(github, directory):
             raise ValueError(f"Release {latest} is missing published assets")
 
     tag = latest if not previous or previous["draft"] else next_tag(tags)
+    if tag is None:
+        return None
     directory.mkdir(parents=True, exist_ok=True)
     entry = releases.get(tag)
     release = GitHubRelease(github, entry) if entry else None
@@ -198,19 +208,29 @@ def publish(github, tag, release_id, directory, target):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--title", help="Validate a PR title instead of calculating a tag")
+    parser.add_argument("--title", help="Preview the version bump for a PR title")
+    parser.add_argument("--sync-toc", metavar="TAG", help="Write a published version to the source TOC")
     parser.add_argument("command", nargs="?", choices=("package", "publish-curseforge", "publish-github"))
     args = parser.parse_args()
     try:
         if args.title is not None:
             print(release_level(args.title))
+        elif args.sync_toc is not None:
+            if not TAG.fullmatch(args.sync_toc):
+                raise ValueError("Expected a stable release tag")
+            TOC.write_bytes(stamp_toc(TOC.read_bytes(), args.sync_toc))
         elif not args.command:
-            print(next_tag(stable_tags()))
+            tag = next_tag(stable_tags())
+            if tag is not None:
+                print(tag)
         else:
             github = GitHub(os.environ["GITHUB_REPOSITORY"])
             if args.command == "package":
                 curseforge_project_id()
                 release = prepare(github, RELEASE_DIRECTORY)
+                if release is None:
+                    print("No release needed after the TOC version sync.")
+                    return
                 with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as stream:
                     stream.write(f"tag={release.tag}\nrelease_id={release.id}\n")
             else:

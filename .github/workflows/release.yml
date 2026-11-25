@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.package.outputs.tag }}
     env:
       CF_PROJECT_ID: ${{ vars.CF_PROJECT_ID }}
     steps:
@@ -37,6 +39,7 @@ jobs:
         run: python3 -B -m scripts.release package
 
       - name: Publish to CurseForge and save the receipt
+        if: steps.package.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
@@ -45,6 +48,7 @@ jobs:
         run: python3 -B -m scripts.release publish-curseforge
 
       - name: Verify the receipt and publish to GitHub
+        if: steps.package.outputs.tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.package.outputs.tag }}
@@ -62,3 +66,43 @@ jobs:
             .release/curseforge-*.json
           include-hidden-files: true
           if-no-files-found: ignore
+
+  sync-toc:
+    name: Open TOC version bump PR
+    needs: deploy
+    if: needs.deploy.outputs.tag != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Write the published version to the TOC
+        id: toc
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.deploy.outputs.tag }}
+        run: |
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          if [[ "$RELEASE_TAG" != "$latest" ]]; then
+            echo "Skipping TOC sync for $RELEASE_TAG because $latest is now the latest release."
+            exit 0
+          fi
+          python3 -B -m scripts.release --sync-toc "$RELEASE_TAG"
+          echo 'current=true' >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the version bump PR
+        if: steps.toc.outputs.current == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: automation/sync-toc
+          base: main
+          add-paths: EVILRises/EVILRises.toc
+          title: "chore(release): sync TOC to ${{ needs.deploy.outputs.tag }}"
+          commit-message: "chore(release): sync TOC to ${{ needs.deploy.outputs.tag }}"
+          body: Update the source TOC to match the published EVIL Rises release.
