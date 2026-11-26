@@ -3,7 +3,7 @@ local craft = addon.Crafting
 local profile = {}
 addon.Profile = profile
 local domain = "memberGear"
-local probe, due, lastGuild, previous
+local probe, display, due, lastGuild, previous, schedule
 -- Coins change in bursts while looting or vending, so a funds-only change waits longer
 -- before it goes to the guild. Gear changes and requests still go out within a second.
 local GEAR_DELAY, MONEY_DELAY = 0.7, 30
@@ -15,6 +15,29 @@ end
 local function itemString(link)
     return type(link)=="string" and link:match("|H(item:[%d:%-]+)|h")
 end
+-- The player's model ID, which guildmates need to draw this character. A model loads
+-- asynchronously, so the ID is often still 0 right after SetUnit. Keep the last ID the
+-- probe reported, and share again when a load brings a new one.
+local function readDisplay()
+    local id=probe:GetDisplayInfo()
+    if type(id)=="number" and id>0 and id~=display then
+        display=id
+        return true
+    end
+end
+local function loadProbe()
+    if not probe then
+        probe=CreateFrame("PlayerModel",nil,UIParent)
+        probe:SetSize(1,1)
+        -- On screen and transparent: a model placed off screen may never load.
+        probe:SetPoint("BOTTOMLEFT")
+        probe:SetAlpha(0)
+        probe:SetScript("OnModelLoaded",function()
+            if readDisplay() then schedule(false) end
+        end)
+    end
+    probe:SetUnit("player")
+end
 local function capture()
     local items={}
     for slot=1,19 do
@@ -22,14 +45,9 @@ local function capture()
         local id=GetInventoryItemID("player",slot)
         if link or id then items[slot]=link or ("item:"..id) end
     end
-    if not probe then
-        probe=CreateFrame("PlayerModel",nil,UIParent)
-        probe:SetSize(1,1)
-        probe:SetPoint("TOPRIGHT",UIParent,"BOTTOMLEFT")
-    end
-    probe:SetUnit("player")
-    local display=probe:GetDisplayInfo()
-    return {items=items,copper=GetMoney(),display=display and display>0 and display or nil}
+    if not probe then loadProbe() end
+    readDisplay()
+    return {items=items,copper=GetMoney(),display=display}
 end
 local function update(force)
     local data=store()
@@ -52,7 +70,7 @@ local function update(force)
 end
 -- One update at the earliest time asked for. A sooner request replaces a later one,
 -- and the replaced timer does nothing when it fires.
-local function schedule(force,delay)
+function schedule(force,delay)
     previous=previous or force
     local at=GetTime()+(delay or GEAR_DELAY)
     if due and due<=at then return end
@@ -104,6 +122,7 @@ events:SetScript("OnEvent",function(_,event,unit)
     if event=="PLAYER_MONEY" then
         schedule(false,MONEY_DELAY)
     elseif event~="UNIT_MODEL_CHANGED" or unit=="player" then
+        if event=="PLAYER_ENTERING_WORLD" or event=="UNIT_MODEL_CHANGED" then loadProbe() end
         schedule(event=="PLAYER_ENTERING_WORLD")
     end
 end)
