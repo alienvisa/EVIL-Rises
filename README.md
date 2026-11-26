@@ -51,7 +51,7 @@ Use a Conventional Commit PR title, such as `feat(roster): add filters` or
 `fix: repair guild sync`, to choose the release bump. Prefer squash merging with
 the PR title as the commit subject. GitHub's default merge commit also carries
 the PR title on the first line of its body. PR CI previews the bump from the
-title and checks Lua 5.1 syntax, guild sync, versioning, release recovery, and
+title and checks Lua 5.1 syntax, guild sync, bounty expiry, chat permissions, versioning, release recovery, and
 the install ZIP.
 
 In GitHub, enable squash merging, set the default squash commit message to
