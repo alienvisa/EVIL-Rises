@@ -7,7 +7,7 @@ local slots={
     {11,"Finger0Slot"},{12,"Finger1Slot"},{13,"Trinket0Slot"},{14,"Trinket1Slot"},
     {16,"MainHandSlot"},{17,"SecondaryHandSlot"},{18,"RangedSlot"},
 }
-local card,panel,model,heading,caption,skills,expander
+local card,panel,model,heading,caption,skills,balance,expander
 local icons={}
 local expanded=true
 local modelUnit,modelGuid,modelSnapshot,modelKey
@@ -62,14 +62,27 @@ local function setModel(key,unit,info,p)
     end
     model:SetFacing(0.2)
 end
-local function anchor()
-    panel:ClearAllPoints()
-    local ratio=card:GetEffectiveScale()/UIParent:GetEffectiveScale()
-    local right=(card:GetRight() or 0)*ratio
-    if UIParent:GetWidth()-right >= (panel:GetWidth()+4)*ratio then
-        panel:SetPoint("TOPLEFT",card,"TOPRIGHT",4,0)
-    else
-        panel:SetPoint("TOPRIGHT",card,"TOPLEFT",-4,0)
+-- The stock card can be docked to another window after DisplayMember returns.
+-- Resolve its screen edge just before drawing, independently of data refresh.
+local anchoredRight
+local function positionFlyout()
+    local right=card:GetRight()
+    if not right then
+        panel:SetAlpha(0)
+        anchoredRight=nil
+        return
+    end
+    local screenRight=UIParent:GetWidth()*UIParent:GetEffectiveScale()
+    local fitsRight=right*card:GetEffectiveScale()+(panel:GetWidth()+4)*panel:GetEffectiveScale()<=screenRight
+    if anchoredRight~=fitsRight then
+        panel:ClearAllPoints()
+        if fitsRight then
+            panel:SetPoint("TOPLEFT",card,"TOPRIGHT",4,0)
+        else
+            panel:SetPoint("TOPRIGHT",card,"TOPLEFT",-4,0)
+        end
+        anchoredRight=fitsRight
+        panel:SetAlpha(1)
     end
 end
 local function render(ask)
@@ -82,13 +95,19 @@ local function render(ask)
     expander:SetText(expanded and "Hide gear & professions" or "Gear & professions")
     panel:SetShown(expanded)
     if not expanded then return end
-    anchor()
     craft.BindGuild()
     local key=addon.Owner(info.name)
     local unit=unitFor(info,key)
     if unit and unit~="player" and model.CanSetUnit and not model:CanSetUnit(unit) then unit=nil end
     if ask then profile.Request(key) end
     local p=profile.Get(key)
+    if p and p.copper~=nil then
+        local copper=p.copper
+        balance:SetFormattedText("Funds   %d |TInterface\\MoneyFrame\\UI-GoldIcon:12|t   %d |TInterface\\MoneyFrame\\UI-SilverIcon:12|t   %d |TInterface\\MoneyFrame\\UI-CopperIcon:12|t",
+            math.floor(copper/10000),math.floor(copper/100)%100,copper%100)
+    else
+        balance:SetText("Funds: not shared yet")
+    end
     heading:SetText(info.name)
     setModel(key,unit,info,p)
     for i,s in ipairs(slots) do
@@ -135,16 +154,21 @@ local function attach()
     panel=CreateFrame("Frame",nil,card,"BackdropTemplate")
     panel:SetFrameStrata("DIALOG")
     panel:SetFrameLevel(card:GetFrameLevel()+5)
-    panel:SetSize(288,356)
+    panel:SetSize(288,380)
     panel:SetClampedToScreen(true)
     panel:SetBackdrop({bgFile="Interface\\DialogFrame\\UI-DialogBox-Background",edgeFile="Interface\\Tooltips\\UI-Tooltip-Border",edgeSize=12,insets={left=3,right=3,top=3,bottom=3}})
     panel:SetBackdropColor(0.1,0.1,0.1,1)
     panel:EnableMouse(true)
+    panel:SetScript("OnShow",function(self)
+        anchoredRight=nil
+        self:SetAlpha(0)
+    end)
+    panel:SetScript("OnUpdate",positionFlyout)
     panel:Hide()
     heading=label("GameFontNormalLarge",12,-10)
     model=CreateFrame("DressUpModel",nil,panel)
     model:SetPoint("TOPLEFT",46,-36)
-    model:SetPoint("BOTTOMRIGHT",-46,114)
+    model:SetPoint("BOTTOMRIGHT",-46,138)
     model:SetScript("OnModelLoaded",outfit)
     model:EnableMouse(true)
     model:SetScript("OnMouseDown",function(self)
@@ -161,6 +185,7 @@ local function attach()
     caption=label("GameFontDisableSmall",40,-249)
     label("GameFontNormal",10,-289):SetText("Professions")
     skills=label("GameFontHighlightSmall",10,-308)
+    balance=label("GameFontHighlight",10,-355)
     for i,s in ipairs(slots) do
         local b=CreateFrame("Button",nil,panel)
         b:SetSize(25,25)

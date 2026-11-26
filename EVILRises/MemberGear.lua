@@ -26,7 +26,7 @@ local function capture()
     end
     probe:SetUnit("player")
     local display=probe:GetDisplayInfo()
-    return {items=items,display=display and display>0 and display or nil}
+    return {items=items,copper=GetMoney(),display=display and display>0 and display or nil}
 end
 local function update(force)
     local data=store()
@@ -35,7 +35,7 @@ local function update(force)
     local key=addon.Owner()
     local old=data[key]
     if not snapshot.display and old then snapshot.display=old.display end
-    local changed=not old or old.display~=snapshot.display
+    local changed=not old or old.display~=snapshot.display or old.copper~=snapshot.copper
     for i=1,19 do
         if not old or old.items[i]~=snapshot.items[i] then changed=true;break end
     end
@@ -81,17 +81,18 @@ craft.SyncService:On(domain,function(env,sender)
         or not (p.time>0 and p.time<=GetServerTime()+300) or p.time%1~=0
         or (data[key] and data[key].time>=p.time) then return end
     if p.display~=nil and (type(p.display)~="number" or not (p.display>=1 and p.display<=2147483647) or p.display%1~=0) then return end
+    if p.copper~=nil and (type(p.copper)~="number" or not (p.copper>=0 and p.copper<=9007199254740991) or p.copper%1~=0) then return end
     local items={}
     for slot,item in pairs(p.items) do
         if type(slot)~="number" or slot%1~=0 or slot<1 or slot>19 or type(item)~="string"
             or #item>768 or not item:match("^item:%d+[%d:%-]*$") then return end
         items[slot]=item
     end
-    data[key]={time=p.time,display=p.display,items=items}
+    data[key]={time=p.time,display=p.display,items=items,copper=p.copper}
     if profile.Refresh then profile.Refresh(key) end
 end)
 local events=CreateFrame("Frame")
-for _,event in ipairs({"PLAYER_ENTERING_WORLD","PLAYER_EQUIPMENT_CHANGED","PLAYER_GUILD_UPDATE","CLUBS_LOADED","UNIT_MODEL_CHANGED"}) do events:RegisterEvent(event) end
+for _,event in ipairs({"PLAYER_ENTERING_WORLD","PLAYER_EQUIPMENT_CHANGED","PLAYER_MONEY","PLAYER_GUILD_UPDATE","CLUBS_LOADED","UNIT_MODEL_CHANGED"}) do events:RegisterEvent(event) end
 events:SetScript("OnEvent",function(_,event,unit)
     if event~="UNIT_MODEL_CHANGED" or unit=="player" then schedule(event=="PLAYER_ENTERING_WORLD") end
 end)

@@ -14,7 +14,7 @@ Under **Orders**, switch between your requests, orders assigned to you, and open
 
 ## Member profiles
 
-Left-click a guildmate in the member list to open their native details card and attached gear flyout. Hover over an equipped slot for its item tooltip or drag the model to rotate it. A visible character uses their live appearance. Away or offline members can show a model dressed from their last shared equipment. Profession ranks appear when available. Use **Hide gear & professions** beneath the card to collapse the flyout.
+Left-click a guildmate in the member list to open their native details card and attached gear flyout. Hover over an equipped slot for its item tooltip or drag the model to rotate it. A visible character uses their live appearance. Away or offline members can show a model dressed from their last shared equipment. Profession ranks appear when available. Version 0.5.7 shares each character�s carried gold, silver, and copper with guildmates running EVIL Rises. The flyout shows their last shared balance while offline. Use **Hide gear & professions** beneath the card to collapse the flyout.
 
 ## Install
 
