@@ -2,7 +2,7 @@
 ## Title: EVIL Rises
 ## Notes: Bounties and crafting orders inside Guild & Communities.
 ## Author: EVIL
-## Version: 0.5.6
+## Version: 0.5.8
 ## AllowLoadGameType: camelot
 ## SavedVariables: EVILRisesBounties, EVRFeaturesDB, EVILRisesCrafting
 
