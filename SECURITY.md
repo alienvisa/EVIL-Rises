@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-If you find a security issue in EVIL Rises, please give the maintainers a chance to investigate privately. Examples include a guild member reading officer chat without permission, one character changing another member’s bounty, or a release ZIP containing unexpected files.
+If you find a security issue in EVIL Rises, please give the maintainers a chance to investigate privately. Examples include one character changing another member’s bounty, or a release ZIP containing unexpected files.
 
 Look for **Report a vulnerability** on the repository’s [Security page](https://github.com/alienvisa/EVIL-Rises/security). If the button is unavailable, [open an issue](https://github.com/alienvisa/EVIL-Rises/issues/new) titled **Private security contact requested**. In that public issue, ask how to reach a maintainer privately. Save the details for the private conversation.
 
@@ -17,3 +17,4 @@ Redact character names, officer messages, guild notes, and account details from 
 ## Fixes and disclosure
 
 Security fixes target the latest published release. Reports about older versions are welcome, especially if the issue may still affect current users. Please coordinate public disclosure with the maintainers so guilds have time to install a fix.
+

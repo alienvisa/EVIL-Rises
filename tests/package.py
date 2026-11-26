@@ -20,7 +20,7 @@ class PackageTests(unittest.TestCase):
             root = Path(temp)
             for directory in ("EVILRises", "scripts", ".github", "tests"):
                 shutil.copytree(ROOT / directory, root / directory)
-            for name in (".pkgmeta", ".gitignore", "README.md", "THEME.md", "AGENTS.md"):
+            for name in (".pkgmeta", ".gitignore", "README.md"):
                 shutil.copy2(ROOT / name, root)
             self.git(root, "init", "-q", "-b", "main")
             self.git(root, "remote", "add", "origin", "https://github.com/alienvisa/EVIL-Rises.git")
