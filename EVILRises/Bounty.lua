@@ -1,26 +1,49 @@
-local _, addon = ...
-local engine = EVRFeatures
-local board = {}
-engine.Bounty = board
-local limit = 20
+local _, board = ...
 local lifetime = 7 * 24 * 60 * 60
+local limit = 20
 local modes = { kos = "Kill on sight", camp = "Camp", both = "Kill on sight + camp" }
+board.modes = modes
 
 local function owner(name)
-    return engine:KeyOfRosterName(name or engine.Compat.PlayerName())
+    if not name then
+        local first, surname = UnitFullName("player")
+        name = surname and surname ~= "" and first .. " " .. surname or first
+    end
+    return name and name:gsub("-", " ")
 end
-
-local function records()
-    if not engine.db or not engine:IsOnGuildDB() then return end
-    engine.db.bounties = engine.db.bounties or {}
-    return engine.db.bounties
-end
+board.Owner = owner
 
 local function clean(s, size)
     if type(s) ~= "string" then return "" end
-    return engine:SanitizeUserText(s, size)
+    return s:gsub("[|%c]", ""):sub(1, size):match("^%s*(.-)%s*$")
 end
 
+function board.GuildID()
+    local id = IsInGuild() and C_Club.GetGuildClubId()
+    if id then return tostring(id) end
+end
+
+local function records()
+    local id = board.GuildID()
+    if not id then return end
+    EVILRisesBounties = EVILRisesBounties or {}
+    local data = EVILRisesBounties[id]
+    if not data then data = {}; EVILRisesBounties[id] = data end
+    local guild = GetGuildInfo("player")
+    if guild and not data.imported then
+        local realm = GetRealmName() or ""
+        local legacy = EVRFeaturesDB and EVRFeaturesDB[guild .. "-" .. realm]
+        for author, sheet in pairs(legacy and legacy.bounties or {}) do
+            local suffix = "-" .. realm
+            local name = realm ~= "" and author:sub(-#suffix) == suffix and author:sub(1,-#suffix-1) or author
+            board.Import(data, owner(name), sheet)
+        end
+        data.imported = true
+    end
+    data.authors = data.authors or {}
+    return data.authors
+end
+board.Records = records
 local function refresh()
     if board.page and board.page:IsVisible() then board.page:Refresh() end
 end
@@ -49,7 +72,7 @@ local function maintain(data, broadcastOwn)
         -- Peers expire cached posts independently. Only the author advances the revision.
         if key == ownKey then
             if removed then sheet.rev = math.max(now, sheet.rev + 1) end
-            if removed or broadcastOwn then engine.SyncService:Publish("bounty", "board", sheet) end
+            if removed or broadcastOwn then board.SendSheet(sheet) end
         end
     end
     if earliest and (not nextWake or earliest < nextWake) then
@@ -85,7 +108,8 @@ end
 
 local function readUnit(unit)
     if not unit or not UnitIsPlayer(unit) then return end
-    local name = GetUnitName(unit, true)
+    local first, surname = UnitFullName(unit)
+    local name = first and (surname and surname ~= "" and first .. " " .. surname or first)
     if not name or name == "" then return end
     return { name = name, class = UnitClass(unit), faction = UnitFactionGroup(unit) }
 end
@@ -156,240 +180,36 @@ function board:Withdraw(post)
     end
 end
 
-function board:Initialize()
-    engine.SyncService:On("bounty", function(env, sender)
-        local data, sheet = records(), env.data
-        if not data or env.act ~= "board" or type(sheet) ~= "table" or type(sender) ~= "string" then return end
-        local key = owner(sender)
-        local rev = sheet.rev
-        if not key or key == owner() or type(rev) ~= "number" or rev ~= math.floor(rev)
-            or rev <= 0 or rev > GetServerTime() + 86400 or type(sheet.posts) ~= "table"
-            or #sheet.posts > limit or (data[key] and data[key].rev >= rev) then return end
-        local posts = {}
-        for _, p in ipairs(sheet.posts) do
-            if type(p) ~= "table" or not modes[p.mode] or (p.faction ~= "Horde" and p.faction ~= "Alliance")
-                or type(p.time) ~= "number" or not (p.time > 0 and p.time <= rev) then return end
-            local target, reward = clean(p.target, 72), clean(p.reward, 64)
-            local copper = validCopper(p.copper) and p.copper or nil
-            if copper then reward = money(copper) end
-            if target == "" or reward == "" then return end
-            posts[#posts + 1] = { target = target, reward = reward, reason = clean(p.reason, 180),
-                faction = p.faction, mode = p.mode, time = p.time, copper = copper, class = clean(p.class, 40) }
+board.ReadUnit = readUnit
+board.MatchName = matchName
+
+function board.Import(bucket, author, sheet)
+    bucket.authors = bucket.authors or {}
+    local data = bucket.authors
+    local now = GetServerTime()
+    if type(author) ~= "string" or author == "" or type(sheet) ~= "table"
+        or type(sheet.rev) ~= "number" or sheet.rev ~= math.floor(sheet.rev)
+        or sheet.rev <= 0 or sheet.rev > now + 86400
+        or type(sheet.posts) ~= "table" or #sheet.posts > limit
+        or (data[author] and data[author].rev >= sheet.rev) then return end
+    local posts = {}
+    for _, p in ipairs(sheet.posts) do
+        if type(p) ~= "table" or not modes[p.mode] or (p.faction ~= "Horde" and p.faction ~= "Alliance")
+            or type(p.time) ~= "number" or not (p.time > 0 and p.time <= sheet.rev)
+            or clean(p.target,72) == "" then return end
+        local reward = validCopper(p.copper) and money(p.copper) or clean(p.reward,64)
+        if reward == "" then return end
+        if now < p.time + lifetime then
+            posts[#posts+1] = {target=clean(p.target,72), faction=p.faction, class=clean(p.class,40),
+                reward=reward, copper=validCopper(p.copper) and p.copper or nil, mode=p.mode,
+                reason=clean(p.reason,180), time=p.time}
         end
-        data[key] = { rev = rev, posts = posts }
-        maintain(data)
-        refresh()
-    end)
+    end
+    data[author] = { rev=sheet.rev, posts=posts }
+    return true
+end
+
+function board.Update()
     maintain(records())
-end
-
-function board:BuildPage(page)
-    self.page = page
-    local function label(parent, text, x, y, font)
-        local fs = parent:CreateFontString(nil, "OVERLAY", font or "GameFontNormal")
-        fs:SetPoint("TOPLEFT", x, y)
-        fs:SetText(text)
-        return fs
-    end
-    local function field(caption, x, y, width, max)
-        label(page, caption, x, y)
-        local input = CreateFrame("EditBox", nil, page, "InputBoxTemplate")
-        input:SetPoint("TOPLEFT", x + 4, y - 18)
-        input:SetSize(width, 22)
-        input:SetMaxBytes(max)
-        input:SetAutoFocus(false)
-        input:SetScript("OnEscapePressed", input.ClearFocus)
-        return input
-    end
-    local name = field("Bounty Target Name", 10, -8, 195, 72)
-    local gold = field("Gold", 235, -8, 80, 8)
-    local silver = field("Silver", 333, -8, 42, 2)
-    local copper = field("Copper", 394, -8, 42, 2)
-    for _, box in ipairs({gold, silver, copper}) do box:SetNumeric(true) end
-    local reason = field("Reason (optional)", 10, -58, 428, 180)
-    local function check(text, x)
-        local box = CreateFrame("CheckButton", nil, page, "UICheckButtonTemplate")
-        box:SetPoint("TOPLEFT", x, -24)
-        box:SetSize(24, 24)
-        label(box, text, 26, -5)
-        return box
-    end
-    local kos, camp = check(modes.kos, 475), check(modes.camp, 610)
-    kos:SetChecked(true)
-    local status = label(page, "", 10, -110, "GameFontHighlightSmall")
-    local function button(text, x, y, width, onClick)
-        local b = addon.CreateThemeButton(page, text)
-        b:SetPoint("TOPLEFT", x, y)
-        b:SetSize(width, 23)
-        b:SetScript("OnClick", onClick)
-    end
-    local faction, class
-    local classLabel = label(page, "", 695, -88, "GameFontHighlightSmall")
-    label(page, "Faction", 700, -8)
-    local factionButton = addon.CreateThemeButton(page, "")
-    factionButton:SetPoint("TOPLEFT", 700, -26)
-    factionButton:SetSize(100, 22)
-    local function setFaction(value)
-        faction = value
-        factionButton:SetText(faction or "Choose faction")
-    end
-    local function defaultFaction()
-        return UnitFactionGroup("player") == "Alliance" and "Horde" or "Alliance"
-    end
-    setFaction(defaultFaction())
-    local resolvedName
-    function page:FillTarget(info)
-        name:SetText(info.name)
-        resolvedName = info.name
-        class = clean(info.class, 40)
-        classLabel:SetText(class)
-        if info.faction == "Alliance" or info.faction == "Horde" then setFaction(info.faction) end
-        status:SetText("")
-    end
-    name:SetScript("OnTextChanged", function()
-        resolvedName, class = nil, nil
-        classLabel:SetText("")
-    end)
-    local function resolve()
-        if name:GetText() ~= resolvedName then
-            local info = matchName(name:GetText())
-            if info then page:FillTarget(info); status:SetText("Matched player: " .. info.name) end
-        end
-    end
-    factionButton:SetScript("OnClick", function()
-        resolve()
-        setFaction(faction == "Alliance" and "Horde" or "Alliance")
-    end)
-    name:SetScript("OnEditFocusLost", resolve)
-    name:SetScript("OnEnterPressed", name.ClearFocus)
-    button("Use target", 470, -75, 102, function()
-        local info = readUnit("target")
-        if info then page:FillTarget(info) else status:SetText("Select a player first.") end
-    end)
-    button("Post bounty", 580, -75, 104, function()
-        resolve()
-        local mode = kos:GetChecked() and (camp:GetChecked() and "both" or "kos") or (camp:GetChecked() and "camp")
-        local amount = gold:GetNumber()*10000 + silver:GetNumber()*100 + copper:GetNumber()
-        local err = board:Post(name:GetText(), amount, reason:GetText(), mode, faction, class)
-        status:SetText(err or "Bounty posted.")
-        if not err then
-            for _, box in ipairs({name, gold, silver, copper, reason}) do box:SetText(""); box:ClearFocus() end
-            setFaction(defaultFaction())
-        end
-    end)
-    local scroll, child = engine.UI:CreateScrollFrame(page, "EVILRisesBountyScroll")
-    scroll:SetPoint("TOPLEFT", 7, -133)
-    scroll:SetPoint("BOTTOMRIGHT", -27, 7)
-    local helpButton = addon.CreateThemeButton(page, "Bounty how-to")
-    helpButton:SetPoint("TOPRIGHT", -8, -103)
-    helpButton:SetSize(118, 23)
-
-    local guide = label(child, table.concat({
-        "|cffffd100Choose a target|r",
-        "Type a name in Bounty Target Name. The board fills in matching player details when available. You can also post a name while the player is offline.",
-        "Already targeting the player? Click Use target. Or right-click the player's portrait and choose Create bounty to open the board with their details filled in.",
-        "",
-        "|cffffd100Post the bounty|r",
-        "Check the faction, choose Kill on sight, Camp, or both, and enter a reward in gold, silver, or copper (at least 1 copper). Add a reason if you like, then click Post bounty.",
-        "",
-        "|cffffd100Claim the reward and close the bounty|r",
-        "To take a bounty, whisper the player listed under Posted by. Agree on what counts as completion and how you'll be paid. Once the deed is done, the two of you confirm completion and arrange payment directly.",
-        "If you posted the bounty, click Withdraw once it's settled. Any bounty still open 7 days after posting is automatically withdrawn, even if the poster is offline.",
-    }, "\n"), 6, -4, "GameFontHighlight")
-    guide:SetJustifyH("LEFT")
-    guide:SetWordWrap(true)
-    guide:SetSpacing(2)
-    guide:Hide()
-    local listings = CreateFrame("Frame", nil, child)
-    listings:SetPoint("BOTTOMRIGHT")
-    local listHeight = 23
-    local function layout()
-        local top = 0
-        if guide:IsShown() then
-            guide:SetWidth(math.max(1, child:GetWidth() - 12))
-            top = math.ceil(guide:GetStringHeight()) + 16
-        end
-        listings:SetPoint("TOPLEFT", 0, -top)
-        child:SetHeight(top + listHeight)
-    end
-    helpButton:SetScript("OnClick", function()
-        guide:SetShown(not guide:IsShown())
-        helpButton:SetText(guide:IsShown() and "Hide how-to" or "Bounty how-to")
-        layout()
-        scroll:SetVerticalScroll(0)
-    end)
-    local empty = label(listings, "No open bounties.", 6, -4, "GameFontDisable")
-    local rows = {}
-    local function createRow(i)
-        local row = CreateFrame("Frame", nil, listings)
-        row:SetPoint("TOPLEFT", 0, -(i-1)*58)
-        row:SetPoint("TOPRIGHT", 0, -(i-1)*58)
-        row:SetHeight(58)
-        local bg = row:CreateTexture(nil, "BACKGROUND")
-        bg:SetAllPoints()
-        bg:SetColorTexture(unpack(i%2==1 and addon.colors.row or addon.colors.alternateRow))
-        local function line(y, font)
-            local fs = label(row, "", 6, y, font)
-            fs:SetPoint("TOPRIGHT", row, "TOPRIGHT", -90, y)
-            fs:SetJustifyH("LEFT")
-            return fs
-        end
-        row.title = line(-3, "GameFontNormal")
-        row.meta = line(-20, "GameFontHighlightSmall")
-        row.reason = line(-34, "GameFontHighlightSmall")
-        row.withdraw = addon.CreateThemeButton(row, "Withdraw")
-        row.withdraw:SetSize(76, 22)
-        row.withdraw:SetPoint("RIGHT", -5, 0)
-        row.withdraw:SetScript("OnClick", function() board:Withdraw(row.post) end)
-        return row
-    end
-    function page:Refresh()
-        local list = {}
-        local data = records()
-        maintain(data)
-        for author, sheet in pairs(data or {}) do
-            for index, post in ipairs(sheet.posts) do list[#list+1] = {author=author, post=post, index=index} end
-        end
-        table.sort(list, function(a,b)
-            if a.post.time ~= b.post.time then return a.post.time > b.post.time end
-            if a.author ~= b.author then return a.author < b.author end
-            return a.index < b.index
-        end)
-        empty:SetShown(#list == 0)
-        listHeight = math.max(23, #list*58)
-        layout()
-        for i, item in ipairs(list) do
-            local row = rows[i] or createRow(i)
-            local p = item.post
-            rows[i], row.post = row, p
-            row.title:SetText(p.target .. " (" .. p.faction .. (p.class and p.class ~= "" and ", " .. p.class or "") .. ")  -  " .. modes[p.mode])
-            row.meta:SetText("Reward: " .. p.reward .. "     Posted by: " .. item.author)
-            row.reason:SetText(p.reason)
-            row.withdraw:SetShown(item.author == owner())
-            row:Show()
-        end
-        for i=#list+1,#rows do rows[i]:Hide() end
-    end
-    scroll:SetScript("OnSizeChanged", function(_, width)
-        child:SetWidth(math.max(1, width))
-        layout()
-    end)
-    page:SetScript("OnShow", page.Refresh)
-    page:Refresh()
-end
-
--- Capture the selected unit while its menu is being built. The target may change before the click.
-if Menu and Menu.ModifyMenu then
-    local function addEntry(_, root, context)
-        if not engine.db or not engine:IsOnGuildDB() or not engine:IsFeatureEnabled("bounty") then return end
-        local info = readUnit(context and context.unit)
-        if info then
-            root:CreateButton("Create bounty", function()
-                if engine.UI:OpenWindow("bounty") and board.page then board.page:FillTarget(info) end
-            end)
-        end
-    end
-    for _, tag in ipairs({"TARGET", "PLAYER", "ENEMY_PLAYER", "PARTY", "RAID_PLAYER", "FOCUS"}) do
-        Menu.ModifyMenu("MENU_UNIT_" .. tag, addEntry)
-    end
+    refresh()
 end

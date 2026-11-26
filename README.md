@@ -1,26 +1,24 @@
-# EVIL Rises — WoW Forever
-<p align="center">
-  <img width="211" height="192" alt="EVIL" src="https://github.com/user-attachments/assets/a94d0bac-87fc-4c19-8010-82e03c43826f" />
-</p>
+# EVIL Rises
 
-EVIL Rises is the guild addon for **EVIL: Every Villian Is Lemons**. Open your usual guild window or type `/evil` to see the guild message of the day and who's online. From the same window you can find a crafter, check the raid calendar, or put a bounty on an enemy player.
+EVIL Rises adds a guild Bounty Board to the standard Guild & Communities window in WoW Forever. Select the skull icon below the built-in tabs on the right, or type `/evil`.
 
-Check us out on CurseForge: [Evil Rises](https://www.curseforge.com/wow/addons/evil-rises)
+Choose **Post a bounty** and enter a character name, use your current target, or right-click a player portrait and choose **Create bounty**. Choose a faction, select **Kill on sight**, **Camp**, or both, and set the gold, silver, and copper reward. Add a reason if you want guildmates to know the story.
 
-## Got ganked? Put a price on their head
+Whisper the poster to agree on completion and payment. Posters withdraw their own listings once settled. Open listings expire seven days after posting. Guildmates running this generation of EVIL Rises exchange updates automatically.
 
-Right-click the enemy player and choose **Create bounty**. The board opens with their name, class, and faction filled in. Lost sight of them on the corpse run? Open **Bounty** and type their name yourself.
+## Crafting Orders
 
-Choose **Kill on sight**, **Camp**, or both. Set the reward in gold, silver, and copper, add a reason if you like, and post it. Your guildmates can see who they're after and why. You can withdraw your own bounty when the score is settled.
+Select the crate beneath the Bounty Board. Search **Recipes** by name or profession, filter by guild coverage, or select a member under **Crafters** to browse what they know. Open a recipe for its materials and source. For recipes that produce an item, choose a quantity, who supplies materials, an optional tip, and either a specific crafter or the whole guild.
 
-## Who's online, and who can make that?
+Under **Orders**, switch between your requests, orders assigned to you, and open requests you can craft. Accept or decline a request, record materials, and mark delivery complete. Guildmates running version 0.5.4 share profession and order updates automatically.
 
-On the **Roster**, a solid green dot means online and a hollow circle means offline. Click a column heading to sort, then click it again to reverse the order. Click a name to see the member's notes, professions, and linked characters.
+## Member profiles
 
-Looking for an enchanter before raid time? Sort the roster by **Primary professions** to find one. If you need a particular recipe, open **Professions** to look it up, see which guildmates know it, and place a craft order.
+Left-click a guildmate in the member list to open their native details card and attached gear flyout. Hover over an equipped slot for its item tooltip or drag the model to rotate it. A visible character uses their live appearance. Away or offline members can show a model dressed from their last shared equipment. Profession ranks appear when available. Version 0.5.7 shares each character�s carried gold, silver, and copper with guildmates running EVIL Rises. The flyout shows their last shared balance while offline. Use **Hide gear & professions** beneath the card to collapse the flyout.
 
-Open a guildmate's roster entry to see their last shared equipment, even while they're offline. EVIL Rises shares gear changes automatically. Item names use their rarity colors, and hovering over a piece shows its WoW item tooltip.
+## Install
 
+Extract the release ZIP into `World of Warcraft/_forever_/Interface/AddOns/` and reload the interface. When upgrading manually, replace the old `EVILRises` addon folder. Existing saved variables can stay in place. Use `/evil version` to check the installed version.
 ## Raid night and guild business
 
 - **Chat** opens guild chat. Members who can read officer chat get a second channel there. A filled gold roster crown marks the guild master, and a gold outline marks ranks with officer permissions.
