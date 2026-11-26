@@ -5,10 +5,9 @@ local craft = addon.Crafting
 --
 -- Every member's professions, levels and recipes, by skill-line and recipe ID. The player's
 -- own come from GetProfessionInfo and, recipe by recipe, IsPlayerSpell over the static catalog
--- (Data/ProfCatalogForever.lua): nobody has to open a window. Members without the addon come
+-- (Crafting/ProfCatalogForever.lua): nobody has to open a window. Members without the addon come
 -- from the Communities roster (the profession, no rank). ProfSync carries the addon records
--- between guildmates; Project() keeps the legacy shapes (members[].professions, db.recipes)
--- that the roster, member detail, recipes panel, tooltips, CraftNet and the export read.
+-- between guildmates; ProfDirectory, the craft orders and the member flyout read them.
 ----------------------------------------------------------------------
 
 local Professions = {}

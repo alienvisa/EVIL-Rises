@@ -5,7 +5,6 @@ local Compat = {}
 craft.Compat = Compat
 craft.L = setmetatable({}, {__index=function(_, label) return label end})
 local TRADE_SLOTS = 6
-Compat.PlayerName = addon.Owner
 Compat.After = C_Timer.After
 Compat.NewTicker = C_Timer.NewTicker
 function Compat.RegisterEvent(frame,event) pcall(frame.RegisterEvent,frame,event) end

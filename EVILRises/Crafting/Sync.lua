@@ -37,7 +37,10 @@ function craft.BindGuild()
         if guild then EVILRisesCrafting[guild]=craft.db end
     end
     local P,S,O = craft.Professions,craft.ProfSync,craft.CraftOrders
-    if not initialized then
+    -- The first bind's Initialize calls ask the guild a few seconds after login. Asking here
+    -- as well would make every member answer twice.
+    local first = not initialized
+    if first then
         initialized=true
         P:Initialize()
         S:Initialize()
@@ -52,8 +55,10 @@ function craft.BindGuild()
         P:Scan()
         P:ReadNative()
         O:Prune()
-        craft.SyncService:Publish("craftorder","ask",{})
-        craft.SyncService:Publish("prof","ask",{})
+        if not first then
+            craft.SyncService:Publish("craftorder","ask",{})
+            craft.SyncService:Publish("prof","ask",{})
+        end
     end
     if craft.ResetPage then craft.ResetPage() end
 end

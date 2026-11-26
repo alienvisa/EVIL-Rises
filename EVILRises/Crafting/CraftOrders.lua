@@ -48,7 +48,6 @@ local function store()
     db.craftOrders = db.craftOrders or {}
     return db.craftOrders
 end
-CraftOrders.Store = store
 
 -- A member key from a name as a message or the roster says it ("Bob", "Bob-Realm").
 function CraftOrders.KeyOf(name)
@@ -75,7 +74,7 @@ local function cleanText(v, max)
     if type(v) ~= "string" then return nil end
     v = v:gsub("[%c|]", "")
     v = v:match("^%s*(.-)%s*$")
-    if craft.CutBytes then v = craft:CutBytes(v, max) else v = v:sub(1, max) end
+    v = v:sub(1, max)
     if v == "" then return nil end
     return v
 end
@@ -98,7 +97,6 @@ local function cleanRg(t)
     end
     return #out > 0 and out or nil
 end
-CraftOrders.CleanReagents = cleanRg
 
 -- An order as it may be kept, or nil. `who`, when given, is its author (the sender), whatever the
 -- message says.
@@ -132,7 +130,6 @@ local function clean(v, who)
     if o.st == "mats" and o.mode ~= "mats" then o.st = "accepted" end
     return o
 end
-CraftOrders.Clean = clean
 
 -- An order's state as it reads: an open order nobody took in OPEN_DAYS has expired.
 function CraftOrders.StateOf(o, t)
@@ -277,10 +274,8 @@ function CraftOrders:CanCraft(item, key)
     local tag = tostring(item) .. "|" .. tostring(key)
     if canCache[tag] ~= nil then return canCache[tag] end
     local yes = false
-    if not yes then
-        for _, c in ipairs(self:CraftersOf(item)) do
-            if c.playerKey == key then yes = true break end
-        end
+    for _, c in ipairs(self:CraftersOf(item)) do
+        if c.playerKey == key then yes = true break end
     end
     canCache[tag] = yes
     return yes
@@ -291,7 +286,7 @@ function CraftOrders:ForgetCrafters() canCache, canCacheAt = {}, 0 end
 -- The catalog recipe that makes `item` for `key` (a member key): the one they know, else the one
 -- most of the guild knows, else the lowest id. Seven Forever items have two recipes (a bar smelted
 -- or transmuted, Tailoring's or Leatherworking's), each with its own reagents (issue #396): taking
--- the first gave Gold Ore for a transmute. Nil when the client has no catalog (Anniversary).
+-- the first gave Gold Ore for a transmute. Nil when no catalog recipe makes the item.
 function CraftOrders:RecipeFor(item, key)
     local D, P = craft.ProfDirectory, craft.Professions
     local ids = D and D.ItemRecipes and D.ItemRecipes(item) or {}
@@ -315,32 +310,23 @@ end
 
 -- What one craft of `item` needs: { { itemID, count } }. The order's own list (the crafter's, sent
 -- with the acceptance) first, then the catalog's for `recipeId` (the row clicked) or for the recipe
--- the order's crafter, else `key`, would use (WoW: Forever, retail), then what this character read
--- in its own tradeskill window (Anniversary).
+-- the order's crafter, else `key`, would use.
 function CraftOrders:Reagents(item, o, recipeId, key)
     local flat = o and o.rg
     if not flat then
-        local D = craft.ProfDirectory
         local id = recipeId or self:RecipeFor(item, (o and (o.cr or o.to)) or key)
-        if D and id then
-            local out = D.Reagents(id)
-            if #out > 0 then return out end
-        end
-        flat = craft.db and craft.db.craftReagents and craft.db.craftReagents[item]
+        return id and craft.ProfDirectory.Reagents(id) or {}
     end
     local out = {}
-    for i = 1, #(flat or {}) - 1, 2 do out[#out + 1] = { itemID = flat[i], count = flat[i + 1] } end
+    for i = 1, #flat - 1, 2 do out[#out + 1] = { itemID = flat[i], count = flat[i + 1] } end
     return out
 end
 
--- How many items one craft makes, as this client knows it: the catalog's for that recipe, or what
--- this character read in its tradeskill window; nil when it does not know.
+-- How many items one craft makes, from the catalog's recipe; nil when it does not say.
 function CraftOrders:KnownYield(item, recipeId, key)
     local r, cat = catalogRecipe(recipeId or self:RecipeFor(item, key))
     local n = r and tonumber(r[cat.F.outCount])
     if n and n >= 1 then return math.floor(n) end
-    local y = craft.db and craft.db.craftYield and craft.db.craftYield[item]
-    return (tonumber(y) and y >= 1) and math.floor(y) or nil
 end
 
 -- How many items one craft makes: the order's own (the crafter's), else what this client knows for
@@ -407,39 +393,7 @@ function CraftOrders:Rows(view)
     return sortRows(rows, t)
 end
 
--- What waits for me: orders sent to me, the ones I accepted and have not finished, and open ones I
--- can craft. The minimap menu and the tab's sub-tabs show it.
-function CraftOrders:InboxCount()
-    local me, t, n = self:MyKey(), now(), 0
-    for _, o in pairs(store()) do
-        local st = CraftOrders.StateOf(o, t)
-        if (o.cr == me and (st == "accepted" or st == "mats"))
-            or (st == "open" and o.who ~= me and (o.to == me or (not o.to and self:CanCraft(o.item)))) then
-            n = n + 1
-        end
-    end
-    return n
-end
-
 function CraftOrders:Get(id) return store()[id] end
-
--- An order's step on the card: 1 open, 2 accepted, 3 materials delivered, 4 done; 0 when it was
--- cancelled or expired.
-local STEP = { open = 1, accepted = 2, mats = 3, done = 4 }
-function CraftOrders.Step(o, t)
-    return STEP[CraftOrders.StateOf(o, t)] or 0
-end
-
--- How many running orders ask for each item: { [itemId] = n }. The catalog's badges and its
--- "With orders" filter read it once per draw.
-function CraftOrders:OrdersByItem()
-    local t, out = now(), {}
-    for _, o in pairs(store()) do
-        if CraftOrders.IsActive(o, t) then out[o.item] = (out[o.item] or 0) + 1 end
-    end
-    return out
-end
-
 
 ----------------------------------------------------------------------
 -- My own actions
@@ -454,10 +408,17 @@ local function itemText(item)
     local _, link = Compat.GetItemInfo(item)
     return link or ("item:" .. tostring(item))
 end
-CraftOrders.ItemText = itemText
 
+-- Redraw the open page once on the next frame. A sync burst (a login's answers, a roster read)
+-- changes many records in a row, and each redraw rebuilds the recipe list.
+local refreshQueued
 function CraftOrders:Refresh()
-    if self.uiRefresh then craft:SafeCall(self.uiRefresh) end
+    if not self.uiRefresh or refreshQueued then return end
+    refreshQueued = true
+    Compat.After(0, function()
+        refreshQueued = false
+        if self.uiRefresh then craft:SafeCall(self.uiRefresh) end
+    end)
 end
 
 local function publish(act, data)
@@ -664,17 +625,6 @@ function CraftOrders:OrdersWith(partner)
         return a.o.id < b.o.id
     end)
     return out
-end
-
--- The one a trade is about: the one picked on the trade bar, else the oldest.
-function CraftOrders:OrderWith(partner)
-    local list = self:OrdersWith(partner)
-    local pick = self.trade and self.trade.pick
-    for _, x in ipairs(list) do
-        if x.o.id == pick then return x.o, x.role end
-    end
-    if list[1] then return list[1].o, list[1].role end
-    return nil
 end
 
 -- What I should hand over in an order: the materials (author, when they bring them and have not
