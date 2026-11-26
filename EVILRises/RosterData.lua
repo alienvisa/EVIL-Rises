@@ -195,6 +195,7 @@ end
 
 function addon.SortRoster(members, column, descending)
     table.sort(members, function(a, b)
+        if a.online ~= b.online then return a.online end
         local left, right = a[column], b[column]
         if type(left) == "string" then left = left ~= "" and left:lower() or nil end
         if type(right) == "string" then right = right ~= "" and right:lower() or nil end

@@ -30,6 +30,38 @@ local function smallIcon(parent, size, offset)
     return icon
 end
 
+local function fullName(name)
+    if not name:find("-", 1, true) then name = name .. "-" .. GetNormalizedRealmName() end
+    return name:lower()
+end
+
+local function openMemberMenu(row)
+    local member = row.member
+    local clubId = C_Club.GetGuildClubId()
+    local club = clubId and C_Club.GetClubInfo(clubId)
+    if club and club.clubType == Enum.ClubType.Guild then
+        for _, id in ipairs(C_Club.GetClubMembers(clubId) or {}) do
+            local info = C_Club.GetMemberInfo(clubId, id)
+            if info and not EVRFeatures.Compat.IsSecret(info.guid, info.name, member.guid) and info.name then
+                local haveGUIDs = member.guid and info.guid
+                if (haveGUIDs and member.guid == info.guid)
+                    or (not haveGUIDs and fullName(member.name) == fullName(info.name)) then
+                    UnitPopup_OpenMenu("COMMUNITIES_GUILD_MEMBER", {
+                        name = info.name, guid = info.guid, isSelf = info.isSelf,
+                        isMobile = info.presence == Enum.ClubMemberPresence.OnlineMobile,
+                        isGuildMember = true, clubInfo = club, clubMemberInfo = info,
+                        clubPrivileges = C_Club.GetClubPrivileges(clubId) or {},
+                        clubAssignableRoles = C_Club.GetAssignableRoles(clubId, id),
+                        ownerFrame = row,
+                    })
+                    return
+                end
+            end
+        end
+    end
+    UIErrorsFrame:AddMessage("Guild member information is unavailable. Try again after the roster updates.")
+end
+
 function addon.CreateRoster(page, frame)
     local toolbar = CreateFrame("Frame", nil, page, "BackdropTemplate")
     toolbar:SetPoint("TOPLEFT", gutter, -6)
@@ -50,6 +82,15 @@ function addon.CreateRoster(page, frame)
         self:SetText("")
         self:ClearFocus()
     end)
+
+    local offline = CreateFrame("CheckButton", nil, toolbar, "UICheckButtonTemplate")
+    offline:SetPoint("LEFT", search, "RIGHT", 12, 0)
+    offline:SetSize(22, 22)
+    offline:SetChecked(addon.settings.showOfflineMembers == true)
+    local offlineLabel = toolbar:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    offlineLabel:SetPoint("LEFT", offline, "RIGHT", 2, 0)
+    offlineLabel:SetText("Show offline members")
+    offline:SetHitRectInsets(0, -(offlineLabel:GetStringWidth() + 2), 0, 0)
 
     local summary = toolbar:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     summary:SetPoint("RIGHT", -8, 0)
@@ -72,8 +113,29 @@ function addon.CreateRoster(page, frame)
     local classSheet = "Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes"
     local statusBase = "Interface\\AddOns\\" .. addon.folder .. "\\Textures\\"
 
+    local layoutColumns
+    local minimum = { 19, 21, 21, 38, 29, 38, 38, 44, 52, 38 }
+    local desired = {}
+    local function cellValue(member, i)
+        if i == 4 then
+            return addon.FindRosterMember(roster, member.shortName) and member.shortName or member.name
+        end
+        local value = i == 8 and member.lastSeen or member[columns[i][1]]
+        return value and value ~= "" and value or blank
+    end
+    local function probe(font)
+        local text = page:CreateFontString(nil, "OVERLAY", font)
+        text:Hide()
+        return text
+    end
+    local nameProbe, cellProbe, headerProbe = probe("GameFontHighlight"), probe("GameFontHighlightSmall"), probe("GameFontNormalSmall")
+
     local function layoutRow(row)
         row:SetWidth(child:GetWidth())
+        for i, icon in ipairs({row.status, row.class, row.crown}) do
+            icon:ClearAllPoints()
+            icon:SetPoint("LEFT", row, "LEFT", offsets[i] + (widths[i] - icon:GetWidth()) / 2, 0)
+        end
         row.nameButton:ClearAllPoints()
         row.nameButton:SetPoint("LEFT", offsets[4], 0)
         row.nameButton:SetWidth(widths[4] - 3)
@@ -87,11 +149,18 @@ function addon.CreateRoster(page, frame)
     end
 
     local function createRow()
-        local row = CreateFrame("Frame", nil, child)
+        local row = CreateFrame("Button", nil, child)
+        row:RegisterForClicks("RightButtonUp")
+        row:SetScript("OnClick", openMemberMenu)
         row:SetHeight(rowHeight)
         row.texts = {}
         row.background = row:CreateTexture(nil, "BACKGROUND")
         row.background:SetAllPoints()
+        row.divider = row:CreateTexture(nil, "ARTWORK")
+        row.divider:SetPoint("TOPLEFT")
+        row.divider:SetPoint("TOPRIGHT")
+        row.divider:SetHeight(1)
+        row.divider:SetColorTexture(unpack(colors.bronze))
         row.status = smallIcon(row, 13, 7)
         row.class = smallIcon(row, 17, 32)
         row.class:SetTexture(classSheet)
@@ -103,8 +172,10 @@ function addon.CreateRoster(page, frame)
         local name = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
         name:SetPoint("LEFT", 3, 0)
         row.texts[4] = name
-        button:SetScript("OnClick", function()
+        button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+        button:SetScript("OnClick", function(_, mouseButton)
             search:ClearFocus()
+            if mouseButton == "RightButton" then openMemberMenu(row); return end
             detail:Open(roster, row.member)
         end)
         for index = 5, #columns do
@@ -125,6 +196,7 @@ function addon.CreateRoster(page, frame)
             if member then
                 if not row then row = createRow(); rows[slot] = row end
                 row.member = member
+                row.divider:SetShown(not member.online and index > 1 and visible[index - 1].online)
                 row:SetPoint("TOPLEFT", child, "TOPLEFT", 0, -(index - 1) * rowHeight)
                 row.background:SetColorTexture(unpack(index % 2 == 0 and colors.alternateRow or colors.row))
                 row.status:SetTexture(statusBase .. (member.online and "Online" or "Offline"))
@@ -136,11 +208,8 @@ function addon.CreateRoster(page, frame)
                     or statusBase .. "OfficerCrown")
                 local nameColor = member.online and 0.97 or 0.70
                 row.texts[4]:SetTextColor(nameColor, nameColor, nameColor)
-                row.texts[4]:SetText(addon.FindRosterMember(roster, member.shortName) and member.shortName or member.name)
-                for column = 5, #columns do
-                    local key = columns[column][1]
-                    local value = key == "elapsed" and member.lastSeen or member[key]
-                    row.texts[column]:SetText(value and value ~= "" and value or blank)
+                for column = 4, #columns do
+                    row.texts[column]:SetText(cellValue(member, column))
                 end
                 row:Show()
             elseif row then
@@ -157,14 +226,31 @@ function addon.CreateRoster(page, frame)
         local query = search:GetText():lower():match("^%s*(.-)%s*$")
         visible = {}
         for _, member in ipairs(roster.members) do
-            if query == "" or table.concat({
+            if (member.online or addon.settings.showOfflineMembers == true) and (query == "" or table.concat({
                 member.name, member.class or "", member.race or "", member.zone or "",
                 member.professions or "", member.rank or "",
-            }, " "):lower():find(query, 1, true) then
+            }, " "):lower():find(query, 1, true)) then
                 visible[#visible + 1] = member
             end
         end
 
+        if not addon.settings.rosterColumnWeights then
+            for i = 4, #columns do
+                headerProbe:SetText(columns[i][2])
+                desired[i] = math.ceil(headerProbe:GetStringWidth()) + 24
+                local measure = i == 4 and nameProbe or cellProbe
+                local seen = {}
+                for _, member in ipairs(visible) do
+                    local value = cellValue(member, i)
+                    if not seen[value] then
+                        seen[value] = true
+                        measure:SetText(value)
+                        desired[i] = math.max(desired[i], math.ceil(measure:GetStringWidth()) + 10)
+                    end
+                end
+            end
+        end
+        layoutColumns()
         local height = math.max(1, #visible * rowHeight)
         child:SetHeight(height)
         local scrollTo = resetScroll and 0 or math.min(scroll:GetVerticalScroll(), math.max(0, height - scroll:GetHeight()))
@@ -172,7 +258,11 @@ function addon.CreateRoster(page, frame)
         local total = string.format("%d online / %d members", roster.online, #roster.members)
         summary:SetText(query == "" and total or (#visible .. " found  -  " .. total))
         if #visible == 0 then
-            empty:SetText(not IsInGuild() and "You are not in a guild." or (query == "" and "Waiting for the guild roster." or "No matching members."))
+            local message = "No matching members."
+            if not IsInGuild() then message = "You are not in a guild."
+            elseif #roster.members == 0 then message = "Waiting for the guild roster."
+            elseif query == "" then message = "No members online." end
+            empty:SetText(message)
         end
         empty:SetShown(#visible == 0)
         for _, entry in ipairs(columns) do
@@ -197,6 +287,7 @@ function addon.CreateRoster(page, frame)
         header.arrow:SetSize(8, 8)
         if key == "online" then
             smallIcon(header, 12, 3):SetTexture(statusBase .. "Online")
+            header:DisableDrawLayer("HIGHLIGHT")
         elseif key == "classFile" then
             local icon = smallIcon(header, 13, 3)
             icon:SetTexture(classSheet)
@@ -208,47 +299,107 @@ function addon.CreateRoster(page, frame)
         end
         header:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_TOP")
-            GameTooltip:SetText("Sort by " .. (tooltip or label))
+            GameTooltip:SetText(key == "online" and "Solid dot: online. Hollow circle: offline." or "Sort by " .. (tooltip or label))
             GameTooltip:Show()
         end)
         header:SetScript("OnLeave", function() GameTooltip:Hide() end)
-        header:SetScript("OnClick", function()
-            descending = sortKey == key and not descending or sortKey ~= key and key == "online"
-            sortKey = key
-            render(true)
-        end)
+        if key ~= "online" then
+            header:SetScript("OnClick", function()
+                descending = sortKey == key and not descending
+                sortKey = key
+                render(true)
+            end)
+        end
         headers[key] = header
     end
 
-    local function layoutColumns()
-        local width = math.floor(scroll:GetWidth())
-        local fixed, flexible = 0, 0
-        for index, entry in ipairs(columns) do
-            if index <= 3 or index == 5 then
-                fixed = fixed + entry[3]
-            else
-                flexible = flexible + entry[3]
-            end
-        end
-        if width <= fixed then return end
-        child:SetWidth(width)
-        local available = width - fixed
+    local function applyWidths()
         local offset = 0
-        for index, entry in ipairs(columns) do
-            local size = entry[3]
-            if index == #columns then
-                size = width - offset
-            elseif index > 3 and index ~= 5 then
-                size = math.floor(size * available / flexible)
-            end
-            widths[index], offsets[index] = size, offset
+        for i, entry in ipairs(columns) do
+            offsets[i] = offset
             local header = headers[entry[1]]
             header:ClearAllPoints()
             header:SetPoint("TOPLEFT", gutter + offset, -35)
-            header:SetWidth(size - 1)
-            offset = offset + size
+            header:SetWidth(widths[i] - 1)
+            offset = offset + widths[i]
         end
         for _, row in ipairs(rows) do layoutRow(row) end
+    end
+
+    layoutColumns = function()
+        local width = math.floor(scroll:GetWidth())
+        local custom = addon.settings.rosterColumnWeights
+        local spare = width
+        for i = 1, #columns do
+            widths[i] = minimum[i]
+            spare = spare - widths[i]
+            if type(custom) ~= "table" or type(custom[i]) ~= "number" or custom[i] < 0 then custom = nil end
+        end
+        if spare < 0 then return end
+        child:SetWidth(width)
+        if not custom then
+            local extra = math.min(spare, math.max(0, (desired[4] or 0) - widths[4]))
+            widths[4], spare = widths[4] + extra, spare - extra
+        end
+        local weights, total = {}, 0
+        for i = 1, #columns do
+            weights[i] = custom and custom[i] or math.max(0, (desired[i] or 0) - widths[i])
+            total = total + weights[i]
+        end
+        -- Once every label fits, distribute the remaining space across the text columns.
+        if not custom and spare > total then
+            for i = 1, #columns do widths[i] = widths[i] + weights[i] end
+            spare, total = spare - total, 0
+        end
+        if total == 0 then
+            for i, entry in ipairs(columns) do
+                weights[i] = i >= 4 and entry[3] or 0
+                total = total + weights[i]
+            end
+        end
+        local sum, used = 0, 0
+        for i = 1, #columns do
+            sum = sum + weights[i]
+            local allocated = math.floor(spare * sum / total + 0.5)
+            widths[i] = widths[i] + allocated - used
+            used = allocated
+        end
+        applyWidths()
+    end
+
+    for i = 1, #columns - 1 do
+        local grip = CreateFrame("Button", nil, headers[columns[i][1]])
+        grip:SetPoint("RIGHT", 3, 0)
+        grip:SetSize(7, 22)
+        grip:RegisterForDrag("LeftButton")
+        grip:RegisterForClicks("RightButtonUp")
+        local function cursor() return GetCursorPosition() / grip:GetEffectiveScale() end
+        grip:SetScript("OnDragStart", function(self)
+            local start, left, right = cursor(), widths[i], widths[i+1]
+            self:SetScript("OnUpdate", function()
+                local delta = math.floor(cursor() - start + 0.5)
+                delta = math.max(minimum[i] - left, math.min(right - minimum[i+1], delta))
+                if widths[i] == left + delta then return end
+                widths[i], widths[i+1] = left + delta, right - delta
+                local saved = {}
+                for j = 1, #columns do saved[j] = widths[j] - minimum[j] end
+                addon.settings.rosterColumnWeights = saved
+                applyWidths()
+            end)
+        end)
+        local function stop(self) self:SetScript("OnUpdate", nil) end
+        grip:SetScript("OnDragStop", stop)
+        grip:SetScript("OnHide", stop)
+        grip:SetScript("OnClick", function()
+            addon.settings.rosterColumnWeights = nil
+            render(false)
+        end)
+        grip:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_TOP")
+            GameTooltip:SetText("Drag to resize. Right-click to auto-fit all columns.")
+            GameTooltip:Show()
+        end)
+        grip:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
     scroll:HookScript("OnSizeChanged", function()
@@ -293,6 +444,10 @@ function addon.CreateRoster(page, frame)
         search:ClearFocus()
     end)
     search:SetScript("OnTextChanged", function()
+        if roster then render(true) end
+    end)
+    offline:SetScript("OnClick", function(self)
+        addon.settings.showOfflineMembers = not not self:GetChecked()
         if roster then render(true) end
     end)
 end

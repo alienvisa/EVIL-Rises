@@ -118,6 +118,31 @@ function addon.CreateMemberTooltip(parent)
     inspect:SetPoint("LEFT", unlink, "RIGHT", 4, 0)
 
     local roster, member
+    local publicEdit = action("Edit player note", 119)
+    publicEdit:SetPoint("BOTTOMLEFT", 18, 65)
+    local officerEdit = action("Edit officer note", 119)
+    local function canEdit(selected, public)
+        if not selected or not selected.guid then return false end
+        local compat = EVRFeatures.Compat
+        if public then return selected.isPlayer or compat.RankEditsNote("public") end
+        return compat.CanViewOfficerNote() and compat.RankEditsNote("officer")
+    end
+    local function editNote(public)
+        local current = addon.ReadRoster()
+        local selected = current.byID[member.id]
+        if current.guildKey ~= roster.guildKey or not canEdit(selected, public) then
+            frame:Refresh(current)
+            return
+        end
+        -- Forever's guild roster uses this native editor for both note types.
+        local note = selected.officerNote
+        if public then note = selected.note end
+        StaticPopup_Show("SET_GUILD_COMMUNITIY_NOTE", nil, nil, {
+            guid = selected.guid, currentNote = note or "", isPublic = public,
+        })
+    end
+    publicEdit:SetScript("OnClick", function() editNote(true) end)
+    officerEdit:SetScript("OnClick", function() editNote(false) end)
     local pending
     local gear, gearMessage
     local rows, waiting = {}, {}
@@ -153,6 +178,14 @@ function addon.CreateMemberTooltip(parent)
     end
 
     local function display()
+        publicEdit:SetShown(canEdit(member, true))
+        officerEdit:SetShown(canEdit(member, false))
+        officerEdit:ClearAllPoints()
+        if publicEdit:IsShown() then
+            officerEdit:SetPoint("LEFT", publicEdit, "RIGHT", 4, 0)
+        else
+            officerEdit:SetPoint("BOTTOMLEFT", 18, 65)
+        end
         local links = addon.GetAltLinks(roster)
         local mainID = links[member.id] or member.id
         local main = roster.byID[mainID]
