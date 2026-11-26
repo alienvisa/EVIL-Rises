@@ -3,7 +3,10 @@ local craft = addon.Crafting
 local profile = {}
 addon.Profile = profile
 local domain = "memberGear"
-local probe, pending, lastGuild, previous
+local probe, due, lastGuild, previous
+-- Coins change in bursts while looting or vending, so a funds-only change waits longer
+-- before it goes to the guild. Gear changes and requests still go out within a second.
+local GEAR_DELAY, MONEY_DELAY = 0.7, 30
 local function store()
     if not craft.db or not craft.guild or craft.guild~=addon.GuildID() then return end
     craft.db.memberGear = craft.db.memberGear or {}
@@ -47,12 +50,16 @@ local function update(force)
         if profile.Refresh then profile.Refresh(key) end
     end
 end
-local function schedule(force)
+-- One update at the earliest time asked for. A sooner request replaces a later one,
+-- and the replaced timer does nothing when it fires.
+local function schedule(force,delay)
     previous=previous or force
-    if pending then return end
-    pending=true
-    C_Timer.After(0.7,function()
-        pending=false
+    local at=GetTime()+(delay or GEAR_DELAY)
+    if due and due<=at then return end
+    due=at
+    C_Timer.After(at-GetTime(),function()
+        if due~=at then return end
+        due=nil
         local send=previous
         previous=nil
         update(send)
@@ -94,5 +101,9 @@ end)
 local events=CreateFrame("Frame")
 for _,event in ipairs({"PLAYER_ENTERING_WORLD","PLAYER_EQUIPMENT_CHANGED","PLAYER_MONEY","PLAYER_GUILD_UPDATE","CLUBS_LOADED","UNIT_MODEL_CHANGED"}) do events:RegisterEvent(event) end
 events:SetScript("OnEvent",function(_,event,unit)
-    if event~="UNIT_MODEL_CHANGED" or unit=="player" then schedule(event=="PLAYER_ENTERING_WORLD") end
+    if event=="PLAYER_MONEY" then
+        schedule(false,MONEY_DELAY)
+    elseif event~="UNIT_MODEL_CHANGED" or unit=="player" then
+        schedule(event=="PLAYER_ENTERING_WORLD")
+    end
 end)

@@ -5,13 +5,14 @@ local craft = addon.Crafting
 --
 -- The "prof" SyncService domain. A member announces a summary: rank, max, specialization
 -- and a hash of the recipe list, per profession. A guildmate whose stored hash differs asks
--- for that one list; the crafter answers once, by whisper, or on the guild channel when
--- several asked within a few seconds. Lists travel once per change, never on a timer.
+-- for that one list; the crafter answers once, addressed to the one who asked, or to everyone
+-- when several asked within a few seconds. Lists travel once per change, never on a timer.
+-- Every message goes on the guild channel; an addressed one is dropped by everyone else.
 --
---   sum   GUILD          { p = { [line] = { r, m, s, h, n } } }
---   ask   GUILD          {}                           everyone answers with its own sum
---   req   WHISPER        { l = { line, ... } }
---   list  WHISPER|GUILD  { l = line, h = hash, r = { ids }, x = { extra ids } }
+--   sum   everyone          { p = { [line] = { r, m, s, h, n } } }
+--   ask   everyone          {}                        everyone answers with its own sum
+--   req   the crafter       { l = { line, ... } }
+--   list  one or everyone   { l = line, h = hash, r = { ids }, x = { extra ids } }
 ----------------------------------------------------------------------
 
 local ProfSync = {}
@@ -143,7 +144,7 @@ function ProfSync:OnRequest(sender, lines)
     end
 end
 
--- Answer everyone who asked for a line: a whisper for one, the guild channel for several.
+-- Answer everyone who asked for a line: addressed to one, or to the whole guild for several.
 function ProfSync:FlushLine(line)
     local waiting = self.outgoing[line]
     self.outgoing[line] = nil

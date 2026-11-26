@@ -57,33 +57,6 @@ function ProfDirectory.Lines()
     return out
 end
 
--- { total, covered, crafters }: catalog recipes on the line, how many at least one member
--- knows, and how many members have the line.
-function ProfDirectory.Coverage(line)
-    local P = craft.Professions
-    local covered, total = 0, 0
-    for _, id in ipairs(catalog().byLine[line] or {}) do
-        if shown(id) then
-            total = total + 1
-            if #P:CraftersOf(id) > 0 then covered = covered + 1 end
-        end
-    end
-    return { total = total, covered = covered, crafters = #P:Members(line) }
-end
-
--- The same over every line, each recipe once (a recipe two professions learn counts once).
-function ProfDirectory.CoverageAll()
-    local P, cat = craft.Professions, catalog()
-    local total, covered = 0, 0
-    for id in pairs(cat.recipes) do
-        if shown(id) then
-            total = total + 1
-            if #P:CraftersOf(id) > 0 then covered = covered + 1 end
-        end
-    end
-    return { total = total, covered = covered }
-end
-
 -- The catalog's recipes on `line` (every line when nil), filtered by `mode` ("all", "guild":
 -- someone knows it, "gaps": nobody does) and a plain-text, case-insensitive `query` on the
 -- localized name; sorted by the yellow rank, then name.
@@ -131,7 +104,6 @@ local function roster()
     end
     return out
 end
-ProfDirectory.Roster = roster
 
 -- Members with the line: { key, name, class, online, rank, max, spec, count, native }, the
 -- ranked ones first by rank, members known from the guild roster only (native) last.
@@ -179,8 +151,8 @@ function ProfDirectory.ItemRecipes(itemID)
     return out
 end
 
--- RecipeTracker's crafter shape { { playerName, playerKey, class, profName } }, or nil. profName
--- is the English name, as Anniversary's: the screens show it through L (issue #114).
+-- The members who know any of `recipeIDs`: { { playerName, playerKey, class, profName } }, or nil.
+-- profName is the English name; the screens show it through L (issue #114).
 local function crafters(recipeIDs)
     local P, cat = craft.Professions, catalog()
     local who, out, seen = nil, {}, {}
@@ -210,7 +182,6 @@ local function crafters(recipeIDs)
 end
 
 function ProfDirectory.CraftersForItem(itemID) return crafters(ProfDirectory.ItemRecipes(itemID)) end
-function ProfDirectory.CraftersForSpell(spellID) return crafters({ spellID }) end
 
 -- { { itemID, count } } a recipe needs, from the catalog.
 function ProfDirectory.Reagents(id)

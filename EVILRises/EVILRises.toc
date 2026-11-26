@@ -3,10 +3,9 @@
 ## Notes: Bounties and crafting orders inside Guild & Communities.
 ## Author: EVIL
 ## Version: 0.7.1
-## SavedVariables: EVILRisesDB, EVRFeaturesDB
+## SavedVariables: EVILRisesDB, EVRFeaturesDB, EVILRisesBounties, EVILRisesCrafting
 ## IconTexture: Interface\Icons\INV_Misc_Food_22
 ## AllowLoadGameType: camelot
-## SavedVariables: EVILRisesBounties, EVRFeaturesDB, EVILRisesCrafting
 
 Libs\LibStub.lua
 Libs\CallbackHandler-1.0.lua
