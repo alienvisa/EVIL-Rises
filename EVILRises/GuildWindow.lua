@@ -1,4 +1,5 @@
 local _, board = ...
+local log = board.Log or function() end
 local host, tab, page, craftTab, bountyPage, craftPage
 local sides = {"ChatTab","RosterTab","GuildBenefitsTab","GuildInfoTab","GuildPreferredPlaySettingsTab"}
 -- These are the native children listed by Forever's GUILD_INFO display mode.
@@ -71,6 +72,7 @@ local function open(info, crafting)
         board.Build(page)
     end
     page:Show()
+    log("Window", "Opened %s", crafting and "Crafting Orders" or "Bounty Board")
     for _, key in ipairs(infoChildren) do hideInfoChild(host[key]) end
     page:List()
     if info then page:Compose(info) end
@@ -147,9 +149,13 @@ local function showBoard(info)
     end
 end
 SLASH_EVILRISES1 = "/evil"
+SLASH_EVILRISES2 = "/evilrises"
 SlashCmdList.EVILRISES = function(command)
-    if command:lower():match("^%s*version%s*$") then
+    local word = command:lower():match("^%s*(%S*)%s*$")
+    if word == "version" then
         print("EVIL Rises " .. C_AddOns.GetAddOnMetadata("EVILRises","Version"))
+    elseif word == "debug" then
+        board.DebugLog.Toggle()
     else
         showBoard()
     end

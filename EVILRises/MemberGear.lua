@@ -3,6 +3,7 @@ local craft = addon.Crafting
 local profile = {}
 addon.Profile = profile
 local domain = "memberGear"
+local log = addon.Log or function() end
 local probe, display, due, lastGuild, previous, schedule
 -- Coins change in bursts while looting or vending, so a funds-only change waits longer
 -- before it goes to the guild. Gear changes and requests still go out within a second.
@@ -22,6 +23,7 @@ local function readDisplay()
     local id=probe:GetDisplayInfo()
     if type(id)=="number" and id>0 and id~=display then
         display=id
+        log("Gear","Own model loaded: display %d",id)
         return true
     end
 end
@@ -63,6 +65,10 @@ local function update(force)
     if changed or force or lastGuild~=craft.guild then
         snapshot.time=math.max(GetServerTime(),old and old.time+(changed and 1 or 0) or 0)
         data[key]=snapshot
+        local count=0
+        for _ in pairs(snapshot.items) do count=count+1 end
+        log("Gear","Sharing own snapshot (%s): %d items, model %s",
+            changed and "changed" or force and "asked for" or "new guild",count,snapshot.display or "not loaded yet")
         lastGuild=craft.guild
         craft.SyncService:Publish(domain,"gear",snapshot)
         if profile.Refresh then profile.Refresh(key) end
@@ -98,22 +104,29 @@ function profile.Request(key)
     craft.SyncService:Publish(domain,"request",{}, {target=key})
 end
 craft.SyncService:On(domain,function(env,sender)
-    if env.act=="request" then schedule(true);return end
+    local key=addon.Owner(sender)
+    if env.act=="request" then
+        log("Gear","%s asked for this character's gear",key)
+        schedule(true)
+        return
+    end
+    local function ignore(why) log("Gear","Ignored %s's gear: %s",key,why) end
     local data=store()
     local p=env.data
-    local key=addon.Owner(sender)
-    if not data or env.act~="gear" or type(p.items)~="table" or type(p.time)~="number"
-        or not (p.time>0 and p.time<=GetServerTime()+300) or p.time%1~=0
-        or (data[key] and data[key].time>=p.time) then return end
-    if p.display~=nil and (type(p.display)~="number" or not (p.display>=1 and p.display<=2147483647) or p.display%1~=0) then return end
-    if p.copper~=nil and (type(p.copper)~="number" or not (p.copper>=0 and p.copper<=9007199254740991) or p.copper%1~=0) then return end
+    if not data or env.act~="gear" then return end
+    if type(p.items)~="table" or type(p.time)~="number"
+        or not (p.time>0 and p.time<=GetServerTime()+300) or p.time%1~=0 then return ignore("invalid time or items") end
+    if data[key] and data[key].time>=p.time then return ignore("not newer than the one held") end
+    if p.display~=nil and (type(p.display)~="number" or not (p.display>=1 and p.display<=2147483647) or p.display%1~=0) then return ignore("invalid model") end
+    if p.copper~=nil and (type(p.copper)~="number" or not (p.copper>=0 and p.copper<=9007199254740991) or p.copper%1~=0) then return ignore("invalid funds") end
     local items={}
     for slot,item in pairs(p.items) do
         if type(slot)~="number" or slot%1~=0 or slot<1 or slot>19 or type(item)~="string"
-            or #item>768 or not item:match("^item:%d+[%d:%-]*$") then return end
+            or #item>768 or not item:match("^item:%d+[%d:%-]*$") then return ignore("invalid item") end
         items[slot]=item
     end
     data[key]={time=p.time,display=p.display,items=items,copper=p.copper}
+    log("Gear","Stored %s's gear: model %s",key,p.display or "not shared")
     if profile.Refresh then profile.Refresh(key) end
 end)
 local events=CreateFrame("Frame")

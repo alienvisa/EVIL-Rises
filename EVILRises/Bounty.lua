@@ -1,4 +1,5 @@
 local _, board = ...
+local log = board.Log or function() end
 local lifetime = 7 * 24 * 60 * 60
 local limit = 20
 local modes = { kos = "Kill on sight", camp = "Camp", both = "Kill on sight + camp" }
@@ -68,6 +69,7 @@ local function maintain(data, broadcastOwn)
     local now, ownKey, earliest = GetServerTime(), owner(), nil
     for key, sheet in pairs(data) do
         local removed, expires = prune(sheet, now)
+        if removed then log("Bounty", "Expired bounties removed from %s's sheet", key) end
         if expires and (not earliest or expires < earliest) then earliest = expires end
         -- Peers expire cached posts independently. Only the author advances the revision.
         if key == ownKey then
@@ -165,6 +167,7 @@ function board:Post(target, copper, reason, mode, faction, class)
     local sheet = data[key] or { rev = 0, posts = {} }
     prune(sheet, GetServerTime())
     if #sheet.posts >= limit then return "Withdraw an open bounty before posting another." end
+    log("Bounty", "Posted a bounty on %s", target)
     table.insert(sheet.posts, 1, { target = target, reward = money(copper), copper = copper, class = clean(class, 40), reason = reason, mode = mode,
         faction = faction, time = GetServerTime() })
     save(key, sheet)
@@ -176,7 +179,12 @@ function board:Withdraw(post)
     local sheet = data and data[key]
     if not sheet then return end
     for i, entry in ipairs(sheet.posts) do
-        if entry == post then table.remove(sheet.posts, i); save(key, sheet); return end
+        if entry == post then
+            log("Bounty", "Withdrew the bounty on %s", post.target)
+            table.remove(sheet.posts, i)
+            save(key, sheet)
+            return
+        end
     end
 end
 

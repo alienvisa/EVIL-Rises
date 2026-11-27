@@ -13,6 +13,7 @@ Libs\ChatThrottleLib.lua
 Libs\AceComm-3.0.lua
 Libs\LibSerialize.lua
 Libs\LibDeflate.lua
+Debug.lua
 Bounty.lua
 Sync.lua
 Board.lua

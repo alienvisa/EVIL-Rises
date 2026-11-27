@@ -23,11 +23,11 @@ local function client(first, surname)
         IsPlayerSpell=function(id) return id==2329 end,
         GetNumGuildMembers=function() return 0 end,
         securecallfunction=function(fn,...) return fn(...) end,
-        GetTime=function() return now end,
+        GetTime=function() return now end, date=os.date,
         C_Timer={NewTicker=noop, After=function(delay,fn) pending[#pending+1]={at=now+delay,fn=fn} end},
     },{__index=_G})
     c.env=env
-    for _,file in ipairs({"Bounty","Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}) do
+    for _,file in ipairs({"Debug","Bounty","Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}) do
         local chunk=assert(loadfile("EVILRises/"..file..".lua"))
         setfenv(chunk,env)("EVILRises",c)
     end
@@ -75,5 +75,17 @@ assert(order.st=="done")
 b.guild=8
 B.BindGuild()
 assert(not B.CraftOrders:Get(order.id))
+-- The debug log names crafting traffic in both directions and the guild switch.
+local function logged(c, pattern)
+    for _,line in ipairs(c.DebugLog.Lines()) do if line:find(pattern) then return true end end
+    return false
+end
+assert(logged(b,"%[Craft In%]  Orders new %(order "))
+assert(logged(a,"%[Craft Out%]  Orders new %(order "))
+assert(logged(a,"%[Craft In%]  Professions list %(line 171, 1 recipes%) from Second Lemon  ·  addressed to you"))
+assert(logged(b,"%[Craft Out%]  Professions list %(line 171, 1 recipes%)  ·  to First Lemon"))
+assert(logged(b,"%[Orders%]  Accepted order "))
+assert(logged(a,"%[Orders%]  Applied acc from Second Lemon"))
+assert(logged(b,"%[Guild%]  Crafting and gear sync bound to guild 8"))
 print("Crafting: recipe discovery, guild sync, directed and open queues, materials, completion and guild switch passed.")
 
