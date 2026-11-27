@@ -5,6 +5,7 @@ local wire = LibStub("LibDeflate")
 local prefix = "EVRBounty1"
 local noop = function() end
 local log, logSync = board.Log or noop, board.LogSync or noop
+local version, noteVersion = board.Version or noop, board.NoteVersion or noop
 -- A message as the debug log names it.
 local function describe(kind, payload)
     if kind == "hello" then return "hello (asks for revisions)" end
@@ -19,7 +20,8 @@ end
 local function send(kind, payload)
     local guild = board.GuildID()
     if not guild then return end
-    local encoded = wire:EncodeForWoWAddonChannel(codec:Serialize(guild, kind, payload))
+    -- The trailing version is read by newer clients and ignored by older ones.
+    local encoded = wire:EncodeForWoWAddonChannel(codec:Serialize(guild, kind, payload, version()))
     comm:SendCommMessage(prefix, encoded, "GUILD", nil, "NORMAL")
     logSync("out", "Bounty", "%s  ·  %d bytes", describe(kind, payload), #encoded)
 end
@@ -63,12 +65,13 @@ comm.RegisterComm(board, prefix, function(_, message, channel, sender)
         logSync("drop", "Bounty", "from %s  ·  could not decode", sender)
         return
     end
-    local ok, guild, kind, payload = codec:Deserialize(raw)
+    local ok, guild, kind, payload, theirs = codec:Deserialize(raw)
     if not ok or not guild or guild ~= board.GuildID() then
         logSync("drop", "Bounty", "from %s  ·  %s", sender, ok and "another guild" or "could not read")
         return
     end
     logSync("in", "Bounty", "%s from %s  ·  %d bytes", describe(kind, payload), sender, #message)
+    noteVersion(sender, theirs)
     local data = board.Records()
     if kind == "hello" then
         once("revision", announce)

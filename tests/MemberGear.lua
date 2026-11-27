@@ -11,6 +11,8 @@ function craft.SyncService:Publish(k,act,p,opts) sent[#sent+1]={k,act,p,opts} en
 local addon={Crafting=craft,GuildID=function() return craft.guild end,Owner=function(n) return n or "Self Lemon" end}
 C_Timer={After=function(_,fn) fn() end}
 function GetServerTime() return now end
+function UnitRace() return "Night Elf","NightElf",4 end
+function UnitSex() return 3 end
 GetTime=GetServerTime
 function GetInventoryItemID(_,s) if s==16 then return 123 end end
 function GetInventoryItemLink(_,s) if s==16 then return "|cff00ff00|Hitem:123:9|h[Sword]|h|r" end end
@@ -27,6 +29,8 @@ local p=addon.Profile
 p.Request("Self Lemon")
 -- The model is still loading: the first snapshot has no appearance yet.
 assert(#sent==1 and p.Get("Self Lemon").display==nil)
+-- Race and sex go out even before the model loads.
+assert(sent[1][3].race==4 and sent[1][3].sex==1)
 modelId=80
 model.OnModelLoaded(model)
 local own=p.Get("Self Lemon")
@@ -39,6 +43,8 @@ handlers.memberGear({act="gear",data={time=now-1,items={}}},"Other Lemon")
 assert(p.Get("Other Lemon").items[5])
 handlers.memberGear({act="gear",data={time=now+1,items={[20]="item:33"}}},"Other Lemon")
 assert(p.Get("Other Lemon").display==81)
+handlers.memberGear({act="gear",data={time=now+1,race=0,items={}}},"Other Lemon")
+assert(p.Get("Other Lemon").time==now, "invalid race rejected")
 now=now+2
 handlers.memberGear({act="gear",data={time=now,display=81,items={}}},"Other Lemon")
 assert(not p.Get("Other Lemon").items[5])

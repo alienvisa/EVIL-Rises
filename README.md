@@ -28,6 +28,8 @@ Extract the release ZIP into `World of Warcraft/_forever_/Interface/AddOns/` and
 
 Guildmates running EVIL Rises sync automatically at login, every 60 seconds, and when they open the guild window. If you missed a bounty or its withdrawal while offline, your board can catch up when the author is back online.
 
+If a guildmate runs a newer version of EVIL Rises than you, a reminder to update appears in your chat window, then again every 30 minutes until you update. Only you see it.
+
 ## Commands and options
 
 - `/evil` or `/evilrises` opens or closes the guild window. Your guild keybind and guild menu button work too.

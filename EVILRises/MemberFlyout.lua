@@ -51,9 +51,11 @@ local function setModel(key,unit,info,p)
         model:SetUnit(unit)
         model:SetCamera(0)
         caption:SetText("Live appearance")
-    elseif p and p.display then
+    elseif p and (p.race or p.display) then
         model:Show()
-        model:SetDisplayInfo(p.display)
+        -- Race and sex build the base model; a model ID from an older version is the fallback.
+        local built=p.race and model.SetCustomRace and pcall(model.SetCustomRace,model,p.race,p.sex or 0)
+        if not built and p.display then model:SetDisplayInfo(p.display) end
         outfit()
         caption:SetText("Shared gear preview")
     else

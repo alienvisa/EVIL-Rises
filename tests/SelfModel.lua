@@ -26,6 +26,11 @@ function methods:SetCamera(n) self.camera=n end
 function methods:ClearModel() self.unit=nil end
 function methods:Show() self.visible=true end
 function methods:Hide() self.visible=false end
+function methods:SetText(t) self.text=t end
+function methods:SetCustomRace(race,sex) self.race,self.sex=race,sex end
+function methods:SetDisplayInfo(id) self.display=id end
+function methods:Undress() self.worn={} end
+function methods:TryOn(item) self.worn[#self.worn+1]=item end
 function CreateFrame(kind,_,parent,template)
     local f=widget()
     if template=="BackdropTemplate" then panel=f end
@@ -55,7 +60,26 @@ assert(model.visible==false)
 card.info={name="Sticky Tickle",isSelf=true}
 card:DisplayMember()
 assert(model.visible and model.unit=="player")
-print("Solo player model, missing roster identifiers, full surname match and member switching passed.")
+-- A guildmate out of range: the model is built from their shared race and sex and dressed in
+-- their shared gear, without a model ID.
+UnitGUID=function() return nil end
+IsInRaid=function() return false end
+GetNumGroupMembers=function() return 0 end
+ITEM_QUALITY_COLORS={}
+addon.Crafting.ProfDirectory={DisplayName=tostring}
+addon.Crafting.Compat.GetItemInfo=noop
+local shared={time=1,race=4,sex=1,items={[5]="item:42:0",[16]="item:123:9"}}
+addon.Profile.Get=function(key) if key=="Far Lemon" then return shared end end
+card.info={name="Far Lemon",guid="Player-1"}
+card:DisplayMember()
+assert(model.visible and rawget(model,"unit")==nil and model.race==4 and model.sex==1 and rawget(model,"display")==nil)
+assert(#model.worn==2)
+-- A snapshot from an older version has only a model ID.
+shared={time=2,display=81,items={}}
+card.info={name="Far Lemon",guid="Player-2"}
+card:DisplayMember()
+assert(rawget(model,"display")==81)
+print("Solo player model, missing roster identifiers, full surname match, member switching and shared race models passed.")
 
 panel.scripts.OnShow(panel)
 panel.scripts.OnUpdate(panel)

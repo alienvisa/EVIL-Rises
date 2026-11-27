@@ -49,7 +49,13 @@ local function capture()
     end
     if not probe then loadProbe() end
     readDisplay()
-    return {items=items,copper=GetMoney(),display=display}
+    -- Race and sex let a guildmate build this character's model without a model ID,
+    -- which the client may not report for a model drawn from a live unit.
+    local _,_,race=UnitRace("player")
+    local sex=UnitSex("player")
+    return {items=items,copper=GetMoney(),display=display,
+        race=type(race)=="number" and race>0 and race or nil,
+        sex=sex==2 and 0 or sex==3 and 1 or nil}
 end
 local function update(force)
     local data=store()
@@ -59,6 +65,7 @@ local function update(force)
     local old=data[key]
     if not snapshot.display and old then snapshot.display=old.display end
     local changed=not old or old.display~=snapshot.display or old.copper~=snapshot.copper
+        or old.race~=snapshot.race or old.sex~=snapshot.sex
     for i=1,19 do
         if not old or old.items[i]~=snapshot.items[i] then changed=true;break end
     end
@@ -67,8 +74,9 @@ local function update(force)
         data[key]=snapshot
         local count=0
         for _ in pairs(snapshot.items) do count=count+1 end
-        log("Gear","Sharing own snapshot (%s): %d items, model %s",
-            changed and "changed" or force and "asked for" or "new guild",count,snapshot.display or "not loaded yet")
+        log("Gear","Sharing own snapshot (%s): %d items, race %s, sex %s, model %s",
+            changed and "changed" or force and "asked for" or "new guild",count,snapshot.race or "unknown",
+            snapshot.sex or "unknown",snapshot.display or "not loaded yet")
         lastGuild=craft.guild
         craft.SyncService:Publish(domain,"gear",snapshot)
         if profile.Refresh then profile.Refresh(key) end
@@ -119,14 +127,17 @@ craft.SyncService:On(domain,function(env,sender)
     if data[key] and data[key].time>=p.time then return ignore("not newer than the one held") end
     if p.display~=nil and (type(p.display)~="number" or not (p.display>=1 and p.display<=2147483647) or p.display%1~=0) then return ignore("invalid model") end
     if p.copper~=nil and (type(p.copper)~="number" or not (p.copper>=0 and p.copper<=9007199254740991) or p.copper%1~=0) then return ignore("invalid funds") end
+    if p.race~=nil and (type(p.race)~="number" or not (p.race>=1 and p.race<=1000) or p.race%1~=0) then return ignore("invalid race") end
+    if p.sex~=nil and p.sex~=0 and p.sex~=1 then return ignore("invalid sex") end
     local items={}
     for slot,item in pairs(p.items) do
         if type(slot)~="number" or slot%1~=0 or slot<1 or slot>19 or type(item)~="string"
             or #item>768 or not item:match("^item:%d+[%d:%-]*$") then return ignore("invalid item") end
         items[slot]=item
     end
-    data[key]={time=p.time,display=p.display,items=items,copper=p.copper}
-    log("Gear","Stored %s's gear: model %s",key,p.display or "not shared")
+    data[key]={time=p.time,display=p.display,items=items,copper=p.copper,race=p.race,sex=p.sex}
+    log("Gear","Stored %s's gear: race %s, sex %s, model %s",key,p.race or "not shared",p.sex or "not shared",
+        p.display or "not shared")
     if profile.Refresh then profile.Refresh(key) end
 end)
 local events=CreateFrame("Frame")
