@@ -28,10 +28,28 @@ local function unitFor(info,key)
         local unit=(raid and "raid" or "party")..i
         if matches(unit) then return unit end
     end
+    -- Anyone close enough to have a nameplate can be drawn live, exactly as they look.
+    local ok,plates=pcall(C_NamePlate and C_NamePlate.GetNamePlates)
+    if ok and type(plates)=="table" then
+        for _,plate in ipairs(plates) do
+            local unit=plate.namePlateUnitToken or (plate.UnitFrame and plate.UnitFrame.unit)
+            if type(unit)=="string" and matches(unit) then return unit end
+        end
+    end
 end
+-- Dress the preview: the outfit as worn (transmog, hidden slots, enchant effects) when the
+-- snapshot has one and the client can apply it, else the equipped items.
 local function outfit()
     if modelUnit or not modelSnapshot then return end
     model:Undress()
+    local create=ItemUtil and ItemUtil.CreateItemTransmogInfo
+    if modelSnapshot.mog and model.SetItemTransmogInfo and create then
+        for slot,t in pairs(modelSnapshot.mog) do
+            local ok,info=pcall(create,t[1],t[2],t[3])
+            if ok and info then pcall(model.SetItemTransmogInfo,model,info,slot) end
+        end
+        return
+    end
     for _,s in ipairs(slots) do
         local id=s[1]
         local item=modelSnapshot.items[id]
@@ -51,9 +69,11 @@ local function setModel(key,unit,info,p)
         model:SetUnit(unit)
         model:SetCamera(0)
         caption:SetText("Live appearance")
-    elseif p and p.display then
+    elseif p and (p.race or p.display) then
         model:Show()
-        model:SetDisplayInfo(p.display)
+        -- Race and sex build the base model; a model ID from an older version is the fallback.
+        local built=p.race and model.SetCustomRace and pcall(model.SetCustomRace,model,p.race,p.sex or 0)
+        if not built and p.display then model:SetDisplayInfo(p.display) end
         outfit()
         caption:SetText("Shared gear preview")
     else
@@ -101,6 +121,9 @@ local function render(ask)
     if unit and unit~="player" and model.CanSetUnit and not model:CanSetUnit(unit) then unit=nil end
     if ask then profile.Request(key) end
     local p=profile.Get(key)
+    -- The model and gear icons come from the newest of their snapshot and the last live sighting.
+    local look=profile.Preview and profile.Preview(key) or p
+    local shown=look and next(look.items or {}) and look or p
     if p and p.copper~=nil then
         local copper=p.copper
         balance:SetFormattedText("Funds   %d |TInterface\\MoneyFrame\\UI-GoldIcon:12|t   %d |TInterface\\MoneyFrame\\UI-SilverIcon:12|t   %d |TInterface\\MoneyFrame\\UI-CopperIcon:12|t",
@@ -109,12 +132,12 @@ local function render(ask)
         balance:SetText("Funds: not shared yet")
     end
     heading:SetText(info.name)
-    setModel(key,unit,info,p)
+    setModel(key,unit,info,look)
     for i,s in ipairs(slots) do
         local icon=icons[i]
         local live=unit and GetInventoryItemLink(unit,s[1])
         if craft.Compat.IsSecret(live) then live=nil end
-        local item=live or (p and p.items[s[1]])
+        local item=live or (shown and shown.items[s[1]])
         icon.item=item
         local texture=icon.empty
         local quality
@@ -169,7 +192,13 @@ local function attach()
     model=CreateFrame("DressUpModel",nil,panel)
     model:SetPoint("TOPLEFT",46,-36)
     model:SetPoint("BOTTOMRIGHT",-46,138)
-    model:SetScript("OnModelLoaded",outfit)
+    model:SetScript("OnModelLoaded",function()
+        if modelUnit then
+            if profile.Remember then profile.Remember(modelKey,modelUnit,model) end
+        else
+            outfit()
+        end
+    end)
     model:EnableMouse(true)
     model:SetScript("OnMouseDown",function(self)
         local last=GetCursorPosition()
@@ -221,8 +250,28 @@ function profile.Refresh(key)
     queued=true
     C_Timer.After(0,function() queued=false;render(false) end)
 end
+-- Unit events redraw the flyout only when they concern the member it shows, so a busy city
+-- full of nameplates does not redraw it every frame.
+local UNIT_EVENTS={PLAYER_TARGET_CHANGED="target",PLAYER_FOCUS_CHANGED="focus",UPDATE_MOUSEOVER_UNIT="mouseover"}
+local function concernsShown(unit)
+    if not unit or not modelKey then return false end
+    if unit==modelUnit then return true end
+    local guid=UnitGUID(unit)
+    return modelGuid~=nil and not craft.Compat.IsSecret(guid) and guid==modelGuid
+end
 local events=CreateFrame("Frame")
-for _,event in ipairs({"ADDON_LOADED","PLAYER_TARGET_CHANGED","PLAYER_FOCUS_CHANGED","GROUP_ROSTER_UPDATE","UPDATE_MOUSEOVER_UNIT","GET_ITEM_INFO_RECEIVED","UNIT_MODEL_CHANGED"}) do events:RegisterEvent(event) end
-events:SetScript("OnEvent",function(_,event)
-    if event=="ADDON_LOADED" then attach() else profile.Refresh() end
+for _,event in ipairs({"ADDON_LOADED","PLAYER_TARGET_CHANGED","PLAYER_FOCUS_CHANGED","GROUP_ROSTER_UPDATE","UPDATE_MOUSEOVER_UNIT","GET_ITEM_INFO_RECEIVED","UNIT_MODEL_CHANGED","NAME_PLATE_UNIT_ADDED","NAME_PLATE_UNIT_REMOVED"}) do
+    pcall(events.RegisterEvent,events,event)
+end
+events:SetScript("OnEvent",function(_,event,unit)
+    if event=="ADDON_LOADED" then
+        attach()
+    elseif UNIT_EVENTS[event] then
+        -- The member came into this unit, or the unit drawn live now shows someone else.
+        if concernsShown(UNIT_EVENTS[event]) or modelUnit==UNIT_EVENTS[event] then profile.Refresh() end
+    elseif event=="NAME_PLATE_UNIT_ADDED" or event=="NAME_PLATE_UNIT_REMOVED" or event=="UNIT_MODEL_CHANGED" then
+        if concernsShown(unit) then profile.Refresh() end
+    else
+        profile.Refresh()
+    end
 end)

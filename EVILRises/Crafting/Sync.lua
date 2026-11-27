@@ -7,6 +7,7 @@ local prefix = "EVRCrafts1"
 local callbacks = {}
 local noop = function() end
 local log, logSync = addon.Log or noop, addon.LogSync or noop
+local version, noteVersion = addon.Version or noop, addon.NoteVersion or noop
 local AREAS = { prof="Professions", craftorder="Orders", memberGear="Gear" }
 local function count(t) return type(t)=="table" and #t or 0 end
 -- A message as the debug log names it: its area, action and the detail that tells two apart.
@@ -39,7 +40,8 @@ function craft.SyncService:Publish(domain, action, data, options)
     local guild = addon.GuildID()
     if not guild or guild ~= craft.guild then return end
     local target = options and options.target
-    local message = codec:Serialize(guild,domain,action,data,target)
+    -- The trailing version is read by newer clients and ignored by older ones.
+    local message = codec:Serialize(guild,domain,action,data,target,version())
     local encoded = wire:EncodeForWoWAddonChannel(message)
     comm:SendCommMessage(prefix,encoded,"GUILD",nil,"BULK")
     logSync("out","Craft",describe(domain,action,data)..(target and "  ·  to %s" or "%s").."  ·  %d bytes",target or "",#encoded)
@@ -56,11 +58,12 @@ comm.RegisterComm(craft,prefix,function(_,message,channel,sender)
         logSync("drop","Craft","from %s  ·  could not decode",sender)
         return
     end
-    local ok,guild,domain,act,data,target = codec:Deserialize(bytes)
+    local ok,guild,domain,act,data,target,theirs = codec:Deserialize(bytes)
     if not ok or not guild or guild~=craft.guild or guild~=addon.GuildID() then
         logSync("drop","Craft","from %s  ·  %s",sender,ok and "another guild" or "could not read")
         return
     end
+    noteVersion(sender,theirs)
     if target and (type(target)~="string" or addon.Owner(target)~=addon.Owner()) then
         logSync("drop","Craft",describe(domain,act,data).." from %s  ·  addressed to %s",sender,target)
         return
