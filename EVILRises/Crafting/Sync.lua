@@ -4,6 +4,10 @@ local callbacks = {}
 local noop = function() end
 local log, logSync = addon.Log or noop, addon.LogSync or noop
 local AREAS = { prof="Professions", craftorder="Orders", memberGear="Gear" }
+-- Order actions race (two crafters accepting at once), so they do not wait behind recipe lists and
+-- gear. An area's capability number goes up when it learns actions older copies do not know.
+local PRIORITY = { craftorder="NORMAL" }
+local VERSION = { craftorder=2 }
 local function count(t) return type(t)=="table" and #t or 0 end
 -- A message as the debug log names it: its area, action and the detail that tells two apart.
 local function describe(domain, act, data)
@@ -52,7 +56,8 @@ local function receive(domain)
     end
 end
 local function register(domain)
-    addon.Comm:Register(domain,{label="Craft",priority="BULK",maxBytes=96000,legacy="crafts",handle=receive(domain)})
+    addon.Comm:Register(domain,{label="Craft",priority=PRIORITY[domain] or "BULK",maxBytes=96000,legacy="crafts",
+        version=VERSION[domain],handle=receive(domain)})
 end
 -- The areas older copies send on the crafting prefix, known before any module asks for them.
 for domain in pairs(AREAS) do register(domain) end
@@ -65,7 +70,7 @@ function craft.SyncService:Publish(domain, action, data, options)
     local guild = addon.GuildID()
     if not guild or guild ~= craft.guild then return end
     local target = options and options.target
-    local bytes = addon.Comm:Send(domain,action,data,{target=target})
+    local bytes = addon.Comm:Send(domain,action,data,{target=target,newOnly=options and options.newOnly})
     if bytes then
         logSync("out","Craft",describe(domain,action,data)..(target and "  ·  to %s" or "%s").."  ·  %d bytes",target or "",bytes)
     end
@@ -96,6 +101,7 @@ function craft.BindGuild()
         P.index,P.nativeAt,P.pendingExtra=nil,0,nil
         S.receivedDigests,S.asked,S.outgoing={},{},{}
         O.trade,O.mailPending,O.answeredAt=nil,nil,nil
+        O.asked,O.fixWaiting=nil,nil
         O:ForgetCrafters()
     end
     if guild then

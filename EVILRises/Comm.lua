@@ -87,8 +87,9 @@ function Comm:SendsLegacy()
     return now < legacyUntil
 end
 
--- Sends one message to the guild. Returns the new-format message's size in bytes, or nil when
--- nothing was sent (no guild, or an unknown area).
+-- Sends one message to the guild. options = { target = the member it is for, newOnly = true for
+-- an action older copies do not know, so no old-format copy is sent }. Returns the new-format
+-- message's size in bytes, or nil when nothing was sent (no guild, or an unknown area).
 function Comm:Send(area, action, payload, options)
     local spec, guild = areas[area], guildID()
     if not (spec and guild) then return nil end
@@ -101,7 +102,7 @@ function Comm:Send(area, action, payload, options)
     local encoded = wire:EncodeForWoWAddonChannel(codec:Serialize(message))
     comm:SendCommMessage(PREFIX, encoded, "GUILD", nil, spec.priority)
     local legacy = spec.legacy and LEGACY[spec.legacy]
-    if legacy and self:SendsLegacy() then
+    if legacy and not (options and options.newOnly) and self:SendsLegacy() then
         -- The old fields in their old order, then PROTOCOL: older copies ignore the extra value,
         -- and newer ones read it as "this is a copy".
         local old

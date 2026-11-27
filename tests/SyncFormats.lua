@@ -103,7 +103,7 @@ assert(count(b,"%[Craft In%]  Orders new %(order "..new.id)==1)
 
 -- New clients learn what each other understand; the old client never says.
 assert(a.Comm:Supports(b.name,"bounty") and a.Comm:Supports(b.name,"craftorder"))
-assert(not a.Comm:Supports(b.name,"craftorder",2))
+assert(a.Comm:Supports(b.name,"craftorder",2) and not a.Comm:Supports(b.name,"craftorder",3))
 assert(not a.Comm:Supports(l.name,"bounty") and not a.Comm:PeerCaps(l.name))
 
 -- A newer client's message: an unknown field is ignored, a newer format and an unknown area are

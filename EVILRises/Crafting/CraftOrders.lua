@@ -15,6 +15,11 @@ local craft = addon.Crafting
 --   new  { order }        acc { id, at, rg }   dec { id }   rel { id }
 --   mats { id }           done { id }          can { id }
 --   ask  {}               have { l = { orders } }
+--
+-- Repair (new clients only): every SUMMARY_EVERY seconds a member lists the orders it speaks for
+-- (placed, taken, released or declined), and a guildmate whose copy differs asks for those orders
+-- and replays what changed through the same rule.
+--   sum  { l = { { id, at, st, cr, to } } }     get { l = { id } }     fix { l = { orders } }
 ----------------------------------------------------------------------
 local CraftOrders = {}
 craft.CraftOrders = CraftOrders
@@ -36,6 +41,12 @@ CraftOrders.MAX_RG    = 8                  -- reagents of one recipe
 CraftOrders.FUTURE    = 300                -- seconds a peer's clock may run ahead
 CraftOrders.ANSWER_EVERY = 120             -- at most one answer to logins every two minutes
 CraftOrders.TAKEOVER  = 60                 -- seconds two acceptances count as "at once"
+CraftOrders.SUMMARY_EVERY = 180            -- seconds between summaries of the orders I speak for
+CraftOrders.SUM_MAX   = 100                -- orders in one summary or request
+CraftOrders.RECENT    = 86400              -- a closed order stays in summaries this long
+CraftOrders.GATHER    = 3                  -- requests gathered before one repair answer
+CraftOrders.REASK_AFTER = 120              -- an answer that never came is asked for again
+CraftOrders.ASK_TIMES = 3                  -- times one difference is asked about at most
 local MAX_ITEM_ID = 10000000
 
 local STATES = { open = true, accepted = true, mats = true, done = true, cancelled = true }
@@ -209,7 +220,7 @@ function CraftOrders:Apply(act, data, by)
         o.y = int(data.y, 1, 1000) or o.y   -- the crafter knows how many one craft makes
     elseif act == "dec" then
         if st ~= "open" or o.to ~= by then return nil end
-        o.to = nil
+        o.to, o.decBy = nil, by
     elseif act == "rel" then
         if o.cr ~= by or not (st == "accepted" or st == "mats") then return nil end
         o.st, o.rel, o.relBy, o.relAcc = "open", math.max(at, o.acc or 0), o.cr, o.acc
@@ -422,8 +433,8 @@ function CraftOrders:Refresh()
     end)
 end
 
-local function publish(act, data)
-    if craft.SyncService then craft.SyncService:Publish(DOMAIN, act, data) end
+local function publish(act, data, options)
+    if craft.SyncService then craft.SyncService:Publish(DOMAIN, act, data, options) end
 end
 
 -- Place an order. opts = { n, mode ("mats"/"own"), tip (copper), note, to (a member key), recipe (the
@@ -525,6 +536,12 @@ function CraftOrders:OnEnvelope(env, sender)
         self:OnAsk()
     elseif env.act == "have" then
         self:Merge(data.l, by)
+    elseif env.act == "sum" then
+        self:OnSummary(data.l, by, sender)
+    elseif env.act == "get" then
+        self:OnGet(data.l, sender)
+    elseif env.act == "fix" then
+        self:Repair(data.l, by)
     else
         local known = self:Get(type(data.id) == "string" and data.id or "")
         local before = known and known.cr
@@ -614,6 +631,170 @@ function CraftOrders:OnAsk()
         self.answeredAt = now()
         publish("have", { l = list })
     end)
+end
+
+----------------------------------------------------------------------
+-- Repair: summaries of the orders each member speaks for, and the orders that differ
+----------------------------------------------------------------------
+-- Whether `key` speaks for `o`: it placed it, took it, or gave it back or declined it last.
+function CraftOrders.SpeaksFor(o, key)
+    return key ~= nil and (o.who == key or o.cr == key or o.relBy == key or o.decBy == key)
+end
+
+-- { { id, at, st, cr, to } } for the orders I speak for that are running or closed within RECENT,
+-- newest first.
+function CraftOrders:SummaryList()
+    local t, me, list = now(), self:MyKey(), {}
+    for _, o in pairs(store()) do
+        if CraftOrders.SpeaksFor(o, me) and (CraftOrders.IsActive(o, t) or t - (o.at or 0) <= self.RECENT) then
+            list[#list + 1] = o
+        end
+    end
+    table.sort(list, function(a, b) return (a.at or 0) > (b.at or 0) end)
+    local out = {}
+    for i = 1, math.min(#list, self.SUM_MAX) do
+        local o = list[i]
+        out[i] = { o.id, o.at or 0, o.st, o.cr or false, o.to or false }
+    end
+    return out
+end
+
+function CraftOrders:PublishSummary()
+    local list = self:SummaryList()
+    if #list > 0 then publish("sum", { l = list }, { newOnly = true }) end
+end
+
+-- A guildmate's summary: ask it for each order my copy lacks or holds in another state. A
+-- difference that replaying cannot settle is asked about ASK_TIMES times at most.
+function CraftOrders:OnSummary(list, by, sender)
+    if type(list) ~= "table" then return end
+    local orders, t, need = store(), now(), {}
+    self.asked = self.asked or {}
+    for i = 1, math.min(#list, self.SUM_MAX) do
+        local e = list[i]
+        if type(e) == "table" then
+            local id, at, st, cr, to = cleanText(e[1], 20), craft.Finite(e[2]), e[3], keyOf(e[4]), keyOf(e[5])
+            if id and at and STATES[st] then
+                local mine = orders[id]
+                local differs
+                if mine then
+                    -- As new or newer and different, or both accepted by different crafters: the loser of
+                    -- two acceptances at once holds the newer copy, and must still ask.
+                    differs = (at >= (mine.at or 0) and (mine.st ~= st or mine.cr ~= cr or mine.to ~= to))
+                        or (st == "accepted" and mine.st == "accepted" and cr ~= nil and mine.cr ~= cr)
+                else
+                    differs = ACTIVE[st] == true
+                end
+                local tag = by .. ":" .. id
+                local asked = self.asked[tag]
+                if asked and asked.at ~= at then asked = nil end
+                if differs and not (asked and (t - asked.t < self.REASK_AFTER or asked.n >= self.ASK_TIMES)) then
+                    self.asked[tag] = { at = at, t = t, n = (asked and asked.n or 0) + 1 }
+                    need[#need + 1] = id
+                end
+            end
+        end
+    end
+    if #need == 0 then return end
+    log("Orders", "%s's summary: %d orders differ here, asking for them", by, #need)
+    publish("get", { l = need }, { target = sender, newOnly = true })
+end
+
+-- A guildmate asked for orders I speak for: answer every asker at once after GATHER seconds,
+-- addressed to one, or to the whole guild for several.
+function CraftOrders:OnGet(ids, sender)
+    if type(ids) ~= "table" then return end
+    local orders, me = store(), self:MyKey()
+    local w = self.fixWaiting
+    if not w then
+        w = { ids = {}, to = {} }
+        self.fixWaiting = w
+        Compat.After(self.GATHER, function() self:FlushFix() end)
+    end
+    for i = 1, math.min(#ids, self.SUM_MAX) do
+        local id = cleanText(ids[i], 20)
+        local o = id and orders[id]
+        if o and CraftOrders.SpeaksFor(o, me) then w.ids[id] = true end
+    end
+    w.to[sender] = true
+end
+
+function CraftOrders:FlushFix()
+    local w = self.fixWaiting
+    self.fixWaiting = nil
+    if not w then return end
+    local orders, list = store(), {}
+    for id in pairs(w.ids) do
+        if orders[id] then list[#list + 1] = orders[id] end
+    end
+    if #list == 0 then return end
+    table.sort(list, function(a, b) return a.id < b.id end)
+    local only, n = nil, 0
+    for name in pairs(w.to) do only, n = name, n + 1 end
+    publish("fix", { l = list }, { target = n == 1 and only or nil, newOnly = true })
+end
+
+-- Replays on my copy what `by` did to an order that I missed, through Apply, so the same rules
+-- decide: an acceptance, a release, a decline, the materials, completion or a cancellation.
+-- Two acceptances at once that this copy heard only one of are settled as Apply settles them
+-- live, the earlier one keeping the order, without Apply's "heard just now" condition: a repair
+-- is by definition heard late.
+function CraftOrders:Replay(mine, o, by)
+    local acts = {}
+    if o.cr == by and mine.st == "accepted" and mine.cr and mine.cr ~= by and o.acc and mine.acc
+        and math.abs(o.acc - mine.acc) <= self.TAKEOVER and CraftOrders.Wins(o.acc, by, mine.acc, mine.cr) then
+        local before = mine.cr
+        mine.cr, mine.acc, mine.at = by, o.acc, math.max(mine.at or 0, o.at or 0)
+        log("Orders", "Repaired acc from %s on order %s: accepted at the same moment as %s, and keeps it", by, o.id, before)
+        if before == self:MyKey() then
+            craft:Print(string.format(L["%s accepted the order for %s at the same moment, and keeps it."],
+                CraftOrders.NameOf(by), itemText(mine.item)))
+        end
+        return true
+    end
+    if o.st == "open" then
+        if mine.to == by and o.to == nil then acts[#acts + 1] = "dec" end
+        if mine.cr == by and o.cr == nil then acts[#acts + 1] = "rel" end
+    elseif o.st == "cancelled" then
+        acts[#acts + 1] = "can"
+    else
+        if o.cr == by and mine.cr ~= by then acts[#acts + 1] = "acc" end
+        if (o.st == "mats" or o.st == "done") and o.mode == "mats" then acts[#acts + 1] = "mats" end
+        if o.st == "done" then acts[#acts + 1] = "done" end
+    end
+    local changed = false
+    for _, act in ipairs(acts) do
+        local data = { id = o.id, at = act == "acc" and o.acc or o.at, rg = o.rg, y = o.y }
+        local r = self:Apply(act, data, by)
+        if r then
+            changed = true
+            log("Orders", "Repaired %s from %s on order %s", act, by, o.id)
+            self:Notify(act, r, by)
+        end
+    end
+    return changed
+end
+
+-- Orders sent in answer to my request: new ones as a login answer would bring them, known ones by
+-- replaying what changed.
+function CraftOrders:Repair(list, by)
+    if type(list) ~= "table" or not by then return end
+    local orders, changed = store(), false
+    for i = 1, math.min(#list, self.SUM_MAX) do
+        local o = clean(list[i])
+        if o then
+            local mine = orders[o.id]
+            if mine then
+                changed = self:Replay(mine, o, by) or changed
+            else
+                changed = self:Merge({ list[i] }, by) or changed
+            end
+        end
+    end
+    if changed then
+        self:Prune()
+        self:Refresh()
+    end
 end
 
 ----------------------------------------------------------------------
@@ -877,5 +1058,6 @@ function CraftOrders:Initialize()
     -- A login asks once what is running; the reply comes from one member. The window's tab and the
     -- bars are painted once the answers had time to come in.
     Compat.After(math.random(8, 20), function() publish("ask", {}) end)
+    Compat.NewTicker(self.SUMMARY_EVERY, function() CraftOrders:PublishSummary() end)
     Compat.After(30, function() CraftOrders:Refresh() end)
 end
