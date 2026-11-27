@@ -15,6 +15,7 @@ Libs\LibSerialize.lua
 Libs\LibDeflate.lua
 Debug.lua
 Version.lua
+Comm.lua
 Bounty.lua
 Sync.lua
 Board.lua

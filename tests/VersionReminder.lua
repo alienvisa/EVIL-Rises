@@ -9,7 +9,9 @@ local now, packets, pending, later = 2000000, {}, {}, {}
 local function client(first, surname, version, files)
     local c = {guild=7, name=first.." "..surname, printed={}, tickers={}}
     local comm = {}
-    function comm.RegisterComm(_,prefix,callback) c.receive=callback end
+    local handlers={}
+    function comm.RegisterComm(_,prefix,callback) handlers[prefix]=callback end
+    c.receive=function(prefix,...) if handlers[prefix] then handlers[prefix](prefix,...) end end
     function comm:SendCommMessage(prefix,message,channel)
         packets[#packets+1]={prefix,message,channel,c.name}
     end
@@ -26,7 +28,7 @@ local function client(first, surname, version, files)
                 if delay<2 then pending[#pending+1]=fn else later[#later+1]={delay=delay,fn=fn} end
             end},
     },{__index=_G})
-    for _,file in ipairs(files or {"Debug","Version","Bounty","Sync"}) do
+    for _,file in ipairs(files or {"Debug","Version","Comm","Bounty","Sync"}) do
         local chunk=assert(loadfile("EVILRises/"..file..".lua"))
         setfenv(chunk,env)("EVILRises",c)
     end
@@ -35,8 +37,9 @@ end
 local old=client("Old","Lemon","0.8.1")
 local new=client("New","Lemon","0.9.0")
 local older=client("Older","Lemon","0.7.4")
--- A client from before this change: no version in its messages, and no reminder module.
-local legacy=client("Legacy","Lemon","0.8.0",{"Bounty","Sync"})
+-- A client from before version reminders: no version in its messages, no reminder module, and
+-- the old message format (tests/legacy holds the 0.9.0 sync files).
+local legacy=client("Legacy","Lemon","0.8.0",{"Bounty","../tests/legacy/Sync"})
 local everyone={old,new,older,legacy}
 local function deliver()
     while #pending>0 or #packets>0 do

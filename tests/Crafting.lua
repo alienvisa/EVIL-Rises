@@ -9,7 +9,9 @@ local now, packets, pending = 2000000, {}, {}
 local function client(first, surname)
     local c = {guild=7, name=first.." "..surname}
     local comm = {}
-    function comm.RegisterComm(_,prefix,callback) c.receive=callback end
+    local handlers={}
+    function comm.RegisterComm(_,prefix,callback) handlers[prefix]=callback end
+    c.receive=function(prefix,...) if handlers[prefix] then handlers[prefix](prefix,...) end end
     function comm:SendCommMessage(prefix,message,channel)
         packets[#packets+1]={prefix,message,channel,c.name}
     end
@@ -27,7 +29,7 @@ local function client(first, surname)
         C_Timer={NewTicker=noop, After=function(delay,fn) pending[#pending+1]={at=now+delay,fn=fn} end},
     },{__index=_G})
     c.env=env
-    for _,file in ipairs({"Debug","Bounty","Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}) do
+    for _,file in ipairs({"Debug","Comm","Bounty","Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}) do
         local chunk=assert(loadfile("EVILRises/"..file..".lua"))
         setfenv(chunk,env)("EVILRises",c)
     end

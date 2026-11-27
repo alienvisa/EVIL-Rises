@@ -47,7 +47,9 @@ dofile("EVILRises/Libs/LibDeflate.lua")
 local function client(first, surname, ui)
     local c = { guild = 7, name = first .. " " .. surname }
     local comm = {}
-    function comm.RegisterComm(_, prefix, callback) c.receive = callback end
+    local handlers = {}
+    function comm.RegisterComm(_, prefix, callback) handlers[prefix] = callback end
+    c.receive = function(prefix, ...) if handlers[prefix] then handlers[prefix](prefix, ...) end end
     function comm:SendCommMessage(prefix, message, channel)
         packets[#packets + 1] = { prefix, message, channel, c.name }
     end
@@ -75,7 +77,7 @@ local function client(first, surname, ui)
         MoneyInputFrame_GetCopper = function() return 50 end,
     }, { __index = _G })
     c.env = env
-    for _, file in ipairs({ "Debug", "Bounty", "Crafting/Client", "Crafting/ProfCatalogForever", "Crafting/Professions",
+    for _, file in ipairs({ "Debug", "Comm", "Bounty", "Crafting/Client", "Crafting/ProfCatalogForever", "Crafting/Professions",
         "Crafting/ProfDirectory", "Crafting/ProfSync", "Crafting/CraftOrders", "Crafting/Sync", "Crafting/Page" }) do
         local chunk = assert(loadfile("EVILRises/" .. file .. ".lua"))
         setfenv(chunk, env)("EVILRises", c)
