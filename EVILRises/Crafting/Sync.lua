@@ -113,8 +113,8 @@ function craft.BindGuild()
     end
     if craft.ResetPage then craft.ResetPage() end
 end
+-- The handler goes on first, and each event through Compat: a client without one of these events
+-- (WoW: Forever has no CLUBS_LOADED) rejects it with an error, which must not stop the others.
 local events=CreateFrame("Frame")
-events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_GUILD_UPDATE")
-events:RegisterEvent("CLUBS_LOADED")
 events:SetScript("OnEvent",craft.BindGuild)
+for _,event in ipairs({"PLAYER_LOGIN","PLAYER_GUILD_UPDATE","CLUBS_LOADED"}) do craft.Compat.RegisterEvent(events,event) end
