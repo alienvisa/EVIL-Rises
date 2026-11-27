@@ -175,4 +175,44 @@ o5.st,o5.at="done",0
 mark=#sent+1
 for _=1,6 do now=now+b.Orders.REASK_AFTER+1; summaries(b) end
 assert(count(mark,"craftorder","get")<=b.Orders.ASK_TIMES)
+-- Two crafters accepted at once; the later one heard nothing and already finished. The order
+-- stands as the winner's copy has it.
+local o6=assert(a.Orders:Place(item,{recipe=recipe,n=6,mode="own"}))
+deliver()
+local t0=now
+assert(b.Orders:Apply("acc",{id=o6.id,at=t0},b.name) and a.Orders:Apply("acc",{id=o6.id,at=t0},b.name))
+assert(c.Orders:Apply("acc",{id=o6.id,at=t0+5},c.name) and c.Orders:Apply("done",{id=o6.id,at=t0+10},c.name))
+now=now+b.Orders.TAKEOVER+10
+summaries(a)                      -- the author's word does not settle it...
+assert(c.Orders:Get(o6.id).cr==c.name)
+summaries(b)                      -- ...the winner's does
+assert(c.Orders:Get(o6.id).cr==b.name and c.Orders:Get(o6.id).st=="accepted")
+
+-- A crafter took an order and gave it back, and another took it within the minute. The author
+-- missed the release and the new crafter missed the first acceptance: the author's stale copy
+-- does not take the order from the new crafter, and the author learns the release.
+local o7=assert(a.Orders:Place(item,{recipe=recipe,n=7,mode="own"}))
+deliver()
+assert(c.Orders:Act(o7.id,"accept"))
+deliver(lose("acc",{b}))
+now=now+5
+assert(c.Orders:Act(o7.id,"release"))
+deliver(lose("rel",{a}))
+now=now+5
+assert(b.Orders:Act(o7.id,"accept"))
+deliver()
+assert(a.Orders:Get(o7.id).cr==c.name and b.Orders:Get(o7.id).cr==b.name)
+now=now+b.Orders.REASK_AFTER+1
+mark=#sent+1
+summaries(a)
+assert(b.Orders:Get(o7.id).cr==b.name)
+-- The crafter that gave it back knows the author's copy is stale, and does not ask about it.
+for i=mark,#sent do
+    local m=sent[i].m
+    if m and m.a=="get" and sent[i].packet[4]==c.name then
+        for _,id in ipairs(m.p.l) do assert(id~=o7.id) end
+    end
+end
+for _=1,2 do now=now+b.Orders.REASK_AFTER+1; summaries(c,b) end
+for _,p in ipairs(everyone) do assert(p.Orders:Get(o7.id).cr==b.name, p.name) end
 print("Order repair: lost acceptances, materials, completion, releases, declines, cancellations and new orders come back from summaries; races settle; repeats are capped.")

@@ -7,16 +7,18 @@ local _, addon = ...
 -- answer is not retried on its own; the next summary shows the gap and the loop runs again.
 -- These two pieces are the loop's bookkeeping, so every area asks and answers by one rule:
 --
---   Repair.Asker(reaskAfter, times)
+--   Repair.Asker(reaskAfter, times, rest)
 --       Whether to ask a guildmate for an entry now: once per version of the entry, again when
---       no answer came within `reaskAfter` seconds, and `times` times at most (no limit when
---       nil), so a difference that an answer cannot settle stops being asked about.
+--       no answer came within `reaskAfter` seconds, and `times` times in a row at most (no limit
+--       when nil). Then the entry rests for `rest` seconds (REST by default) before the count
+--       starts over: a difference that an answer cannot settle costs a few messages an hour, and
+--       one whose answers were all lost is still repaired.
 --   Repair.Gather(seconds, flush)
 --       Requests gathered for `seconds`, then one answer per group: flush(items, target, group),
 --       where target is the one member who asked, or nil when several did and the answer goes
 --       to the whole guild.
 ----------------------------------------------------------------------
-local Repair = {}
+local Repair = { REST = 1800 }
 addon.Repair = Repair
 
 local function owner(name) return addon.Owner and addon.Owner(name) or name end
@@ -24,8 +26,8 @@ local function owner(name) return addon.Owner and addon.Owner(name) or name end
 local Asker = {}
 Asker.__index = Asker
 
-function Repair.Asker(reaskAfter, times)
-    return setmetatable({ reaskAfter = reaskAfter, times = times, entries = {} }, Asker)
+function Repair.Asker(reaskAfter, times, rest)
+    return setmetatable({ reaskAfter = reaskAfter, times = times, rest = rest or Repair.REST, entries = {} }, Asker)
 end
 
 -- Whether to ask `from` for `entry` at version `stamp` now. Records the ask when it is due.
@@ -34,6 +36,7 @@ function Asker:Want(from, entry, stamp)
     local now = GetServerTime()
     local e = self.entries[tag]
     if e and e.stamp ~= stamp then e = nil end
+    if e and self.times and e.n >= self.times and now - e.t >= self.rest then e = nil end
     if e and (now - e.t < self.reaskAfter or (self.times and e.n >= self.times)) then return false end
     self.entries[tag] = { stamp = stamp, t = now, n = (e and e.n or 0) + 1 }
     return true

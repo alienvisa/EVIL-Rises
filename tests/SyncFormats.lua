@@ -8,13 +8,19 @@ dofile("EVILRises/Libs/LibSerialize.lua")
 dofile("EVILRises/Libs/LibDeflate.lua")
 local codec, wire = LibStub("EVRFeatures-LibSerialize"), LibStub("LibDeflate")
 local now, packets, pending = 2000000, {}, {}
-local CRAFTING = {"Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory",
-    "Crafting/ProfSync","Crafting/CraftOrders"}
+-- A 0.9.0 client is today's files with the sync files that changed since swapped for their
+-- 0.9.0 copies in tests/legacy.
+local CURRENT = {"Debug","Version","Comm","Repair","Bounty","Sync","Crafting/Client","Crafting/ProfCatalogForever",
+    "Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}
+local OLD = {Comm=false, Repair=false, Sync="../tests/legacy/Sync", ["Crafting/ProfSync"]="../tests/legacy/Crafting/ProfSync",
+    ["Crafting/CraftOrders"]="../tests/legacy/Crafting/CraftOrders", ["Crafting/Sync"]="../tests/legacy/Crafting/Sync"}
 local function files(legacy)
-    local list = legacy and {"Debug","Repair","Bounty","../tests/legacy/Sync"} or {"Debug","Version","Comm","Repair","Bounty","Sync"}
-    for _, f in ipairs(CRAFTING) do list[#list+1] = f end
-    list[#list+1] = legacy and "../tests/legacy/Crafting/Sync" or "Crafting/Sync"
-    list[#list+1] = "Crafting/Page"
+    local list = {}
+    for _, f in ipairs(CURRENT) do
+        local file = f
+        if legacy and OLD[f] ~= nil then file = OLD[f] end
+        if file then list[#list+1] = file end
+    end
     return list
 end
 local function client(first, surname, legacy)

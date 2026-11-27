@@ -215,4 +215,20 @@ assert(logged(a,"bounced, sent on the guild channel")==1)
 local stranger=wire:EncodeForWoWAddonChannel(codec:Serialize({v=2,g="7",d="bounty",a="hello",p=false}))
 a.receive("EVRSync2",stranger,"WHISPER","Stranger Lemon")
 assert(logged(a,"whisper from Stranger Lemon  ·  not heard in the guild")==1)
-print("Area repair: gear and Bounty sheets come back from summaries, messages for one member go by whisper, bounced whispers fall back to the guild channel.")
+-- The ask limit: twice in a row at most, then a rest, then asking starts over; a new version of
+-- the entry is asked for at once.
+local asker=a.Repair.Asker(10,2,100)
+assert(asker:Want(b.name,"x",1))
+assert(not asker:Want(b.name,"x",1))
+now=now+10
+assert(asker:Want(b.name,"x",1))
+now=now+50
+assert(not asker:Want(b.name,"x",1))
+assert(asker:Want(b.name,"x",2))
+now=now+10
+assert(asker:Want(b.name,"x",2))
+now=now+99
+assert(not asker:Want(b.name,"x",2))
+now=now+1
+assert(asker:Want(b.name,"x",2))
+print("Area repair: gear and Bounty sheets come back from summaries, messages for one member go by whisper, bounced whispers fall back to the guild channel, asking pauses after its limit.")

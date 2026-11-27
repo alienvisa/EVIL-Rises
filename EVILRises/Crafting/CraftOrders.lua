@@ -19,7 +19,7 @@ local craft = addon.Crafting
 -- Repair (new clients only): every SUMMARY_EVERY seconds a member lists the orders it speaks for
 -- (placed, taken, released or declined), and a guildmate whose copy differs asks for those orders
 -- and replays what changed through the same rule.
---   sum  { l = { { id, at, st, cr, to } } }     get { l = { id } }     fix { l = { orders } }
+--   sum  { l = { { id, at, st, cr, to, acc } } }     get { l = { id } }     fix { l = { orders } }
 ----------------------------------------------------------------------
 local CraftOrders = {}
 craft.CraftOrders = CraftOrders
@@ -660,7 +660,7 @@ function CraftOrders:SummaryList()
     local out = {}
     for i = 1, math.min(#list, self.SUM_MAX) do
         local o = list[i]
-        out[i] = { o.id, o.at or 0, o.st, o.cr or false, o.to or false }
+        out[i] = { o.id, o.at or 0, o.st, o.cr or false, o.to or false, o.acc or false }
     end
     return out
 end
@@ -668,6 +668,21 @@ end
 function CraftOrders:PublishSummary()
     local list = self:SummaryList()
     if #list > 0 then publish("sum", { l = list }, { newOnly = true }) end
+end
+
+-- States in which an order has a crafter.
+local TAKEN = { accepted = true, mats = true, done = true }
+
+-- Whether a guildmate's crafter `cr`, who accepted at `acc`, beat the one my copy holds: two
+-- acceptances at once, settled on every copy alike, the earlier keeping the order, whatever state
+-- the order reached meanwhile (a copy that missed one acceptance may have heard the materials or
+-- the completion first). Not when my copy saw that acceptance given back: that is a release and a
+-- new acceptance, not a race.
+function CraftOrders:BeatsMine(mine, cr, acc)
+    return cr ~= nil and mine.cr ~= nil and cr ~= mine.cr and acc ~= nil and mine.acc ~= nil
+        and TAKEN[mine.st] == true and math.abs(acc - mine.acc) <= self.TAKEOVER
+        and not (mine.relBy == cr and mine.relAcc == acc)
+        and CraftOrders.Wins(acc, cr, mine.acc, mine.cr)
 end
 
 -- A guildmate's summary: ask it for each order my copy lacks or holds in another state. A
@@ -679,14 +694,15 @@ function CraftOrders:OnSummary(list, by, sender)
         local e = list[i]
         if type(e) == "table" then
             local id, at, st, cr, to = cleanText(e[1], 20), craft.Finite(e[2]), e[3], keyOf(e[4]), keyOf(e[5])
+            local acc = craft.Finite(e[6])
             if id and at and STATES[st] then
                 local mine = orders[id]
                 local differs
                 if mine then
-                    -- As new or newer and different, or both accepted by different crafters: the loser of
-                    -- two acceptances at once holds the newer copy, and must still ask.
+                    -- As new or newer and different, or its crafter beat mine to the order: the copy
+                    -- that missed the earlier of two acceptances may hold the newer change.
                     differs = (at >= (mine.at or 0) and (mine.st ~= st or mine.cr ~= cr or mine.to ~= to))
-                        or (st == "accepted" and mine.st == "accepted" and cr ~= nil and mine.cr ~= cr)
+                        or (TAKEN[st] == true and self:BeatsMine(mine, cr, acc))
                 else
                     differs = ACTIVE[st] == true
                 end
@@ -724,34 +740,44 @@ end
 -- Replays on my copy what `by` did to an order that I missed, through Apply, so the same rules
 -- decide: an acceptance, a release, a decline, the materials, completion or a cancellation.
 -- Two acceptances at once that this copy heard only one of are settled as Apply settles them
--- live, the earlier one keeping the order, without Apply's "heard just now" condition: a repair
--- is by definition heard late.
+-- live, the earlier one keeping the order, without Apply's "heard just now" condition (a repair
+-- is by definition heard late) and in any state the order reached (see BeatsMine). Only the
+-- winner itself says so: another copy, even the author's, may predate the winner giving the order
+-- back. The order then stands as the winner's copy has it, and materials the author gave stay
+-- given.
 function CraftOrders:Replay(mine, o, by)
     local acts = {}
-    if o.cr == by and mine.st == "accepted" and mine.cr and mine.cr ~= by and o.acc and mine.acc
-        and math.abs(o.acc - mine.acc) <= self.TAKEOVER and CraftOrders.Wins(o.acc, by, mine.acc, mine.cr) then
+    if o.cr == by and TAKEN[o.st] and self:BeatsMine(mine, o.cr, o.acc) then
         local before = mine.cr
-        mine.cr, mine.acc, mine.at = by, o.acc, math.max(mine.at or 0, o.at or 0)
-        log("Orders", "Repaired acc from %s on order %s: accepted at the same moment as %s, and keeps it", by, o.id, before)
+        local st = o.st
+        if st == "accepted" and mine.mode == "mats" and (mine.st == "mats" or mine.st == "done") then st = "mats" end
+        mine.cr, mine.acc, mine.st, mine.at = o.cr, o.acc, st, math.max(mine.at or 0, o.at or 0)
+        log("Orders", "Repaired acc from %s on order %s: %s accepted at the same moment as %s, and keeps it",
+            by, o.id, o.cr, before)
         if before == self:MyKey() then
             craft:Print(string.format(L["%s accepted the order for %s at the same moment, and keeps it."],
-                CraftOrders.NameOf(by), itemText(mine.item)))
+                CraftOrders.NameOf(o.cr), itemText(mine.item)))
         end
         return true
     end
+    -- { act, time it happened }
     if o.st == "open" then
-        if mine.to == by and o.to == nil then acts[#acts + 1] = "dec" end
-        if mine.cr == by and o.cr == nil then acts[#acts + 1] = "rel" end
+        if mine.to == by and o.to == nil then acts[#acts + 1] = { "dec", o.at } end
+        if mine.cr == by and o.cr == nil then acts[#acts + 1] = { "rel", o.at } end
     elseif o.st == "cancelled" then
-        acts[#acts + 1] = "can"
+        acts[#acts + 1] = { "can", o.at }
     else
-        if o.cr == by and mine.cr ~= by then acts[#acts + 1] = "acc" end
-        if (o.st == "mats" or o.st == "done") and o.mode == "mats" then acts[#acts + 1] = "mats" end
-        if o.st == "done" then acts[#acts + 1] = "done" end
+        -- My crafter's own copy names another: it gave the order back, and someone took it since.
+        -- The release is dated from the acceptance it ends, so the new acceptance comes after it.
+        if mine.cr == by and o.cr ~= by then acts[#acts + 1] = { "rel", mine.acc or o.at } end
+        if o.cr == by and mine.cr ~= by then acts[#acts + 1] = { "acc", o.acc } end
+        if (o.st == "mats" or o.st == "done") and o.mode == "mats" then acts[#acts + 1] = { "mats", o.at } end
+        if o.st == "done" then acts[#acts + 1] = { "done", o.at } end
     end
     local changed = false
-    for _, act in ipairs(acts) do
-        local data = { id = o.id, at = act == "acc" and o.acc or o.at, rg = o.rg, y = o.y }
+    for _, step in ipairs(acts) do
+        local act = step[1]
+        local data = { id = o.id, at = step[2], rg = o.rg, y = o.y }
         local r = self:Apply(act, data, by)
         if r then
             changed = true
