@@ -13,6 +13,11 @@ local GEAR_DELAY, MONEY_DELAY = 0.7, 30
 local EQUIP_FALLBACK = 5
 -- A guildmate seen live is remembered at most this often.
 local SEEN_EVERY = 300
+-- The shared repair loop (Repair.lua): every SUMMARY_EVERY seconds a member says how new its own
+-- snapshot is; a guildmate holding an older one, or none, asks for it, again after REASK_AFTER
+-- and ASK_TIMES times at most per snapshot, and the member answers everyone who asked within
+-- GATHER seconds at once: by whisper to one, or to the whole guild for several.
+local SUMMARY_EVERY, REASK_AFTER, ASK_TIMES, GATHER = 600, 120, 3, 3
 local function isSecret(...)
     return craft.Compat and craft.Compat.IsSecret and craft.Compat.IsSecret(...) or false
 end
@@ -141,7 +146,21 @@ local function update(force)
         lastGuild=craft.guild
         craft.SyncService:Publish(domain,"gear",snapshot)
         if profile.Refresh then profile.Refresh(key) end
+        return true
     end
+end
+local asker=addon.Repair.Asker(REASK_AFTER,ASK_TIMES)
+-- A changed snapshot goes to the whole guild; an unchanged one only to who asked.
+local answers=addon.Repair.Gather(GATHER,function(_,target)
+    if update(false) then return end
+    local data=store()
+    local own=data and data[addon.Owner()]
+    if own then craft.SyncService:Publish(domain,"gear",own,{target=target}) end
+end)
+local function summarize()
+    local data=store()
+    local own=data and data[addon.Owner()]
+    if own then craft.SyncService:Publish(domain,"sum",{t=own.time},{newOnly=true}) end
 end
 -- One update at the earliest time asked for. A sooner request replaces a later one,
 -- and the replaced timer does nothing when it fires.
@@ -213,12 +232,21 @@ craft.SyncService:On(domain,function(env,sender)
     local key=addon.Owner(sender)
     if env.act=="request" then
         log("Gear","%s asked for this character's gear",key)
-        schedule(true)
+        answers:Add(sender)
         return
     end
     local function ignore(why) log("Gear","Ignored %s's gear: %s",key,why) end
     local data=store()
     local p=env.data
+    if data and env.act=="sum" then
+        local t=type(p)=="table" and p.t
+        if type(t)~="number" or t%1~=0 or not (t>0 and t<=GetServerTime()+300) then return end
+        if (not data[key] or data[key].time<t) and asker:Want(key,"gear",t) then
+            log("Gear","%s's snapshot is newer than the one held: asking for it",key)
+            craft.SyncService:Publish(domain,"request",{},{target=key})
+        end
+        return
+    end
     if not data or env.act~="gear" then return end
     if type(p.items)~="table" or type(p.time)~="number"
         or not (p.time>0 and p.time<=GetServerTime()+300) or p.time%1~=0 then return ignore("invalid time or items") end
@@ -251,6 +279,7 @@ craft.SyncService:On(domain,function(env,sender)
         p.sex or "not shared")
     if profile.Refresh then profile.Refresh(key) end
 end)
+C_Timer.NewTicker(SUMMARY_EVERY,summarize)
 local events=CreateFrame("Frame")
 for _,event in ipairs({"PLAYER_ENTERING_WORLD","PLAYER_EQUIPMENT_CHANGED","PLAYER_MONEY","PLAYER_GUILD_UPDATE","CLUBS_LOADED","UNIT_MODEL_CHANGED","TRANSMOGRIFY_SUCCESS"}) do
     pcall(events.RegisterEvent,events,event)

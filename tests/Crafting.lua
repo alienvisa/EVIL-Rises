@@ -9,9 +9,11 @@ local now, packets, pending = 2000000, {}, {}
 local function client(first, surname)
     local c = {guild=7, name=first.." "..surname}
     local comm = {}
-    function comm.RegisterComm(_,prefix,callback) c.receive=callback end
-    function comm:SendCommMessage(prefix,message,channel)
-        packets[#packets+1]={prefix,message,channel,c.name}
+    local handlers={}
+    function comm.RegisterComm(_,prefix,callback) handlers[prefix]=callback end
+    c.receive=function(prefix,...) if handlers[prefix] then handlers[prefix](prefix,...) end end
+    function comm:SendCommMessage(prefix,message,channel,target)
+        packets[#packets+1]={prefix,message,channel,c.name,to=target}
     end
     local env=setmetatable({
         LibStub=function(name) if name=="AceComm-3.0" then return comm end return LibStub(name) end,
@@ -27,7 +29,7 @@ local function client(first, surname)
         C_Timer={NewTicker=noop, After=function(delay,fn) pending[#pending+1]={at=now+delay,fn=fn} end},
     },{__index=_G})
     c.env=env
-    for _,file in ipairs({"Debug","Bounty","Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}) do
+    for _,file in ipairs({"Debug","Comm","Repair","Bounty","Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}) do
         local chunk=assert(loadfile("EVILRises/"..file..".lua"))
         setfenv(chunk,env)("EVILRises",c)
     end
@@ -45,7 +47,7 @@ local function deliver()
         end
         while #packets>0 do
             local packet=table.remove(packets,1)
-            for _,c in ipairs({a,b}) do c.receive(unpack(packet)) end
+            for _,c in ipairs({a,b}) do if not packet.to or packet.to:gsub("-"," ")==c.name then c.receive(unpack(packet)) end end
         end
     end
 end
