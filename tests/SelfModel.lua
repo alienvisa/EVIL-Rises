@@ -79,7 +79,35 @@ shared={time=2,display=81,items={}}
 card.info={name="Far Lemon",guid="Player-2"}
 card:DisplayMember()
 assert(rawget(model,"display")==81)
-print("Solo player model, missing roster identifiers, full surname match, member switching and shared race models passed.")
+-- A snapshot with the outfit as worn: each slot's appearance goes onto the preview.
+local applied={}
+ItemUtil={CreateItemTransmogInfo=function(a,b,c) return {a,b,c} end}
+methods.SetItemTransmogInfo=function(self,info,slot) applied[slot]=info end
+shared={time=3,race=4,sex=1,mog={[1]={500,0,0},[16]={900,0,77}},items={[16]="item:123:9"}}
+card.info={name="Far Lemon",guid="Player-3"}
+card:DisplayMember()
+assert(applied[1][1]==500 and applied[16][3]==77 and #model.worn==0)
+-- Close enough for a nameplate: drawn live, and remembered once the model loads.
+local remembered={}
+addon.Profile.Remember=function(key,unit) remembered[#remembered+1]={key,unit} end
+C_NamePlate={GetNamePlates=function() return {{namePlateUnitToken="nameplate3"}} end}
+UnitGUID=function(unit) if unit=="nameplate3" then return "Player-4" end end
+methods.CanSetUnit=function() return true end
+card.info={name="Far Lemon",guid="Player-4"}
+card:DisplayMember()
+assert(model.unit=="nameplate3")
+model.scripts.OnModelLoaded(model)
+assert(#remembered==1 and remembered[1][1]=="Far Lemon" and remembered[1][2]=="nameplate3")
+-- Nameplates for other players do not redraw the flyout; the shown member's do.
+local timers=0
+C_Timer={After=function() timers=timers+1 end}
+listener.scripts.OnEvent(nil,"NAME_PLATE_UNIT_ADDED","nameplate9")
+listener.scripts.OnEvent(nil,"UPDATE_MOUSEOVER_UNIT")
+assert(timers==0)
+listener.scripts.OnEvent(nil,"NAME_PLATE_UNIT_REMOVED","nameplate3")
+assert(timers==1)
+methods.CanSetUnit=function() return false end
+print("Solo player model, missing roster identifiers, full surname match, member switching and shared race models, worn outfits, nameplate live models and event filtering passed.")
 
 panel.scripts.OnShow(panel)
 panel.scripts.OnUpdate(panel)
