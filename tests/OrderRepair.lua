@@ -9,15 +9,15 @@ dofile("EVILRises/Libs/LibSerialize.lua")
 dofile("EVILRises/Libs/LibDeflate.lua")
 local codec, wire = LibStub("EVRFeatures-LibSerialize"), LibStub("LibDeflate")
 local now, packets, pending = 2000000, {}, {}
-local FILES = {"Debug","Version","Comm","Bounty","Sync","Crafting/Client","Crafting/ProfCatalogForever",
+local FILES = {"Debug","Version","Comm","Repair","Bounty","Sync","Crafting/Client","Crafting/ProfCatalogForever",
     "Crafting/Professions","Crafting/ProfDirectory","Crafting/ProfSync","Crafting/CraftOrders","Crafting/Sync","Crafting/Page"}
 local function client(first, surname)
     local c = {guild=7, name=first.." "..surname}
     local comm, handlers = {}, {}
     function comm.RegisterComm(_,prefix,callback) handlers[prefix]=callback end
     c.receive=function(prefix,...) if handlers[prefix] then handlers[prefix](prefix,...) end end
-    function comm:SendCommMessage(prefix,message,channel,_,prio)
-        packets[#packets+1]={prefix,message,channel,c.name,prio}
+    function comm:SendCommMessage(prefix,message,channel,target,prio)
+        packets[#packets+1]={prefix,message,channel,c.name,prio,to=target}
     end
     local env=setmetatable({
         LibStub=function(name) if name=="AceComm-3.0" then return comm end return LibStub(name) end,
@@ -58,7 +58,7 @@ local function deliver(lost)
             local m=decoded(packet)
             sent[#sent+1]={packet=packet,m=m}
             for _,peer in ipairs(everyone) do
-                if not (lost and m and lost(packet,peer,m)) then peer.receive(unpack(packet)) end
+                if not (lost and m and lost(packet,peer,m)) then if not packet.to or packet.to:gsub("-"," ")==peer.name then peer.receive(unpack(packet)) end end
             end
         end
         table.sort(pending,function(x,y) return x.at<y.at end)

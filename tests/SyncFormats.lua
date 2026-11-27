@@ -11,7 +11,7 @@ local now, packets, pending = 2000000, {}, {}
 local CRAFTING = {"Crafting/Client","Crafting/ProfCatalogForever","Crafting/Professions","Crafting/ProfDirectory",
     "Crafting/ProfSync","Crafting/CraftOrders"}
 local function files(legacy)
-    local list = legacy and {"Debug","Bounty","../tests/legacy/Sync"} or {"Debug","Version","Comm","Bounty","Sync"}
+    local list = legacy and {"Debug","Repair","Bounty","../tests/legacy/Sync"} or {"Debug","Version","Comm","Repair","Bounty","Sync"}
     for _, f in ipairs(CRAFTING) do list[#list+1] = f end
     list[#list+1] = legacy and "../tests/legacy/Crafting/Sync" or "Crafting/Sync"
     list[#list+1] = "Crafting/Page"
@@ -22,8 +22,8 @@ local function client(first, surname, legacy)
     local comm, handlers = {}, {}
     function comm.RegisterComm(_,prefix,callback) handlers[prefix]=callback end
     c.receive=function(prefix,...) if handlers[prefix] then handlers[prefix](prefix,...) end end
-    function comm:SendCommMessage(prefix,message,channel)
-        packets[#packets+1]={prefix,message,channel,c.name}
+    function comm:SendCommMessage(prefix,message,channel,target)
+        packets[#packets+1]={prefix,message,channel,c.name,to=target}
     end
     local env=setmetatable({
         LibStub=function(name) if name=="AceComm-3.0" then return comm end return LibStub(name) end,
@@ -55,7 +55,7 @@ local function deliver()
     while true do
         while #packets>0 do
             local packet=table.remove(packets,1)
-            for _,c in ipairs(online) do c.receive(unpack(packet)) end
+            for _,c in ipairs(online) do if not packet.to or packet.to:gsub("-"," ")==c.name then c.receive(unpack(packet)) end end
         end
         table.sort(pending,function(x,y) return x.at<y.at end)
         if #pending==0 or pending[1].at>now+300 then break end
@@ -105,6 +105,14 @@ assert(count(b,"%[Craft In%]  Orders new %(order "..new.id)==1)
 assert(a.Comm:Supports(b.name,"bounty") and a.Comm:Supports(b.name,"craftorder"))
 assert(a.Comm:Supports(b.name,"craftorder",2) and not a.Comm:Supports(b.name,"craftorder",3))
 assert(not a.Comm:Supports(l.name,"bounty") and not a.Comm:PeerCaps(l.name))
+-- A message for the old client goes on the guild channel, with its old-format copy; one for a
+-- new client goes by whisper, and to that client only.
+assert(not a.Comm:WhisperName(l.name) and a.Comm:WhisperName(b.name)=="Second-Lemon")
+A.SyncService:Publish("craftorder","ask",{},{target=l.name})
+assert(#packets==2 and packets[1][3]=="GUILD" and packets[2][1]=="EVRCrafts1")
+A.SyncService:Publish("craftorder","ask",{},{target=b.name})
+assert(#packets==3 and packets[3][3]=="WHISPER" and packets[3].to=="Second-Lemon")
+deliver()
 
 -- A newer client's message: an unknown field is ignored, a newer format and an unknown area are
 -- dropped and logged.

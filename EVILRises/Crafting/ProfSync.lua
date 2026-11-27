@@ -7,7 +7,9 @@ local craft = addon.Crafting
 -- and a hash of the recipe list, per profession. A guildmate whose stored hash differs asks
 -- for that one list; the crafter answers once, addressed to the one who asked, or to everyone
 -- when several asked within a few seconds. Lists travel once per change, never on a timer.
--- Every message goes on the guild channel; an addressed one is dropped by everyone else.
+-- The asking and the gathered answers are the shared repair loop (Repair.lua). An addressed
+-- message goes by whisper to a member on the current format, or on the guild channel, where
+-- everyone else drops it.
 --
 --   sum   everyone          { p = { [line] = { r, m, s, h, n } } }
 --   ask   everyone          {}                        everyone answers with its own sum
@@ -34,8 +36,8 @@ end
 
 function ProfSync:Initialize()
     self.receivedDigests = {}
-    self.asked = {}      -- [sender .. ":" .. line] = { h = hash, at = time }
-    self.outgoing = {}   -- [line] = { [requester] = true }
+    self.asker = addon.Repair.Asker(self.REASK_AFTER)
+    self.lists = addon.Repair.Gather(self.AGGREGATE, function(_, target, line) ProfSync:FlushLine(line, target) end)
     craft.SyncService:On(DOMAIN, function(env, sender) ProfSync:OnEnvelope(env, sender) end)
     Compat.After(math.random(5, 15), function()
         ProfSync:PublishSummary()
@@ -111,16 +113,9 @@ function ProfSync:OnSummary(key, sender, p)
     self.receivedDigests[key] = #need == 0 and digest(p) or nil
     if #need == 0 then return end
     local rec = craft.Professions:Get(key)
-    local now = GetServerTime()
     local ask = {}
     for _, line in ipairs(need) do
-        local tag = sender .. ":" .. line
-        local h = rec.profs[line].h
-        local a = self.asked[tag]
-        if not a or a.h ~= h or now - a.at > self.REASK_AFTER then
-            self.asked[tag] = { h = h, at = now }
-            ask[#ask + 1] = line
-        end
+        if self.asker:Want(sender, line, rec.profs[line].h) then ask[#ask + 1] = line end
     end
     if #ask == 0 then return end
     log("Professions", "%s's recipes changed on %d lines: asking for them", key, #ask)
@@ -128,9 +123,8 @@ function ProfSync:OnSummary(key, sender, p)
         -- A guild-wide answer to someone else may have brought the list meanwhile.
         local still, current = {}, craft.Professions:Get(key)
         for _, line in ipairs(ask) do
-            local tagKey = sender .. ":" .. line
             local e = current and current.profs[line]
-            if e and not e.recipes and self.asked[tagKey] and e.h == self.asked[tagKey].h then still[#still + 1] = line end
+            if e and not e.recipes and e.h == self.asker:Asked(sender, line) then still[#still + 1] = line end
         end
         if #still > 0 then craft.SyncService:Publish(DOMAIN, "req", { l = still }, { target = sender }) end
     end)
@@ -139,28 +133,14 @@ end
 function ProfSync:OnRequest(sender, lines)
     if type(lines) ~= "table" or #lines > craft.Professions.MAX_LINES then return end
     for _, line in ipairs(lines) do
-        if type(line) == "number" and craft.Professions:OwnLine(line) then
-            local waiting = self.outgoing[line]
-            if not waiting then
-                waiting = {}
-                self.outgoing[line] = waiting
-                Compat.After(self.AGGREGATE, function() self:FlushLine(line) end)
-            end
-            waiting[sender] = true
-        end
+        if type(line) == "number" and craft.Professions:OwnLine(line) then self.lists:Add(sender, nil, line) end
     end
 end
 
 -- Answer everyone who asked for a line: addressed to one, or to the whole guild for several.
-function ProfSync:FlushLine(line)
-    local waiting = self.outgoing[line]
-    self.outgoing[line] = nil
+function ProfSync:FlushLine(line, target)
     local e = craft.Professions:OwnLine(line)
-    if not (waiting and e and e.recipes) then return end
-    local only, count = nil, 0
-    for name in pairs(waiting) do
-        only, count = name, count + 1
-    end
+    if not (e and e.recipes) then return end
     craft.SyncService:Publish(DOMAIN, "list", { l = line, h = e.h, r = e.recipes, x = e.extra or {} },
-        { target = count == 1 and only or nil })
+        { target = target })
 end

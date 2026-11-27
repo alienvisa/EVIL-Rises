@@ -99,9 +99,12 @@ function craft.BindGuild()
         O:Initialize()
     else
         P.index,P.nativeAt,P.pendingExtra=nil,0,nil
-        S.receivedDigests,S.asked,S.outgoing={},{},{}
+        S.receivedDigests={}
+        S.asker:Reset()
+        S.lists:Reset()
         O.trade,O.mailPending,O.answeredAt=nil,nil,nil
-        O.asked,O.fixWaiting=nil,nil
+        O.asker:Reset()
+        O.fixes:Reset()
         O:ForgetCrafters()
     end
     if guild then

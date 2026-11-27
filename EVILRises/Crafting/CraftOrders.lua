@@ -47,6 +47,12 @@ CraftOrders.RECENT    = 86400              -- a closed order stays in summaries 
 CraftOrders.GATHER    = 3                  -- requests gathered before one repair answer
 CraftOrders.REASK_AFTER = 120              -- an answer that never came is asked for again
 CraftOrders.ASK_TIMES = 3                  -- times one difference is asked about at most
+-- The shared repair bookkeeping (Repair.lua): which differences were asked about, and the
+-- requests waiting for one answer.
+CraftOrders.asker = addon.Repair.Asker(CraftOrders.REASK_AFTER, CraftOrders.ASK_TIMES)
+CraftOrders.fixes = addon.Repair.Gather(CraftOrders.GATHER, function(ids, target)
+    CraftOrders:FlushFix(ids, target)
+end)
 local MAX_ITEM_ID = 10000000
 
 local STATES = { open = true, accepted = true, mats = true, done = true, cancelled = true }
@@ -668,8 +674,7 @@ end
 -- difference that replaying cannot settle is asked about ASK_TIMES times at most.
 function CraftOrders:OnSummary(list, by, sender)
     if type(list) ~= "table" then return end
-    local orders, t, need = store(), now(), {}
-    self.asked = self.asked or {}
+    local orders, need = store(), {}
     for i = 1, math.min(#list, self.SUM_MAX) do
         local e = list[i]
         if type(e) == "table" then
@@ -685,13 +690,7 @@ function CraftOrders:OnSummary(list, by, sender)
                 else
                     differs = ACTIVE[st] == true
                 end
-                local tag = by .. ":" .. id
-                local asked = self.asked[tag]
-                if asked and asked.at ~= at then asked = nil end
-                if differs and not (asked and (t - asked.t < self.REASK_AFTER or asked.n >= self.ASK_TIMES)) then
-                    self.asked[tag] = { at = at, t = t, n = (asked and asked.n or 0) + 1 }
-                    need[#need + 1] = id
-                end
+                if differs and self.asker:Want(by, id, at) then need[#need + 1] = id end
             end
         end
     end
@@ -705,33 +704,21 @@ end
 function CraftOrders:OnGet(ids, sender)
     if type(ids) ~= "table" then return end
     local orders, me = store(), self:MyKey()
-    local w = self.fixWaiting
-    if not w then
-        w = { ids = {}, to = {} }
-        self.fixWaiting = w
-        Compat.After(self.GATHER, function() self:FlushFix() end)
-    end
     for i = 1, math.min(#ids, self.SUM_MAX) do
         local id = cleanText(ids[i], 20)
         local o = id and orders[id]
-        if o and CraftOrders.SpeaksFor(o, me) then w.ids[id] = true end
+        if o and CraftOrders.SpeaksFor(o, me) then self.fixes:Add(sender, id) end
     end
-    w.to[sender] = true
 end
 
-function CraftOrders:FlushFix()
-    local w = self.fixWaiting
-    self.fixWaiting = nil
-    if not w then return end
+function CraftOrders:FlushFix(ids, target)
     local orders, list = store(), {}
-    for id in pairs(w.ids) do
+    for id in pairs(ids) do
         if orders[id] then list[#list + 1] = orders[id] end
     end
     if #list == 0 then return end
     table.sort(list, function(a, b) return a.id < b.id end)
-    local only, n = nil, 0
-    for name in pairs(w.to) do only, n = name, n + 1 end
-    publish("fix", { l = list }, { target = n == 1 and only or nil, newOnly = true })
+    publish("fix", { l = list }, { target = target, newOnly = true })
 end
 
 -- Replays on my copy what `by` did to an order that I missed, through Apply, so the same rules

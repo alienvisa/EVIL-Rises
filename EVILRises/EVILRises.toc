@@ -16,6 +16,7 @@ Libs\LibDeflate.lua
 Debug.lua
 Version.lua
 Comm.lua
+Repair.lua
 Bounty.lua
 Sync.lua
 Board.lua

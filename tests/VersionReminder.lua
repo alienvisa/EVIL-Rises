@@ -12,8 +12,8 @@ local function client(first, surname, version, files)
     local handlers={}
     function comm.RegisterComm(_,prefix,callback) handlers[prefix]=callback end
     c.receive=function(prefix,...) if handlers[prefix] then handlers[prefix](prefix,...) end end
-    function comm:SendCommMessage(prefix,message,channel)
-        packets[#packets+1]={prefix,message,channel,c.name}
+    function comm:SendCommMessage(prefix,message,channel,target)
+        packets[#packets+1]={prefix,message,channel,c.name,to=target}
     end
     local env=setmetatable({
         LibStub=function(name) if name=="AceComm-3.0" then return comm end return LibStub(name) end,
@@ -28,7 +28,7 @@ local function client(first, surname, version, files)
                 if delay<2 then pending[#pending+1]=fn else later[#later+1]={delay=delay,fn=fn} end
             end},
     },{__index=_G})
-    for _,file in ipairs(files or {"Debug","Version","Comm","Bounty","Sync"}) do
+    for _,file in ipairs(files or {"Debug","Version","Comm","Repair","Bounty","Sync"}) do
         local chunk=assert(loadfile("EVILRises/"..file..".lua"))
         setfenv(chunk,env)("EVILRises",c)
     end
@@ -46,7 +46,7 @@ local function deliver()
         while #pending>0 do table.remove(pending,1)() end
         while #packets>0 do
             local packet=table.remove(packets,1)
-            for _,c in ipairs(everyone) do c.receive(unpack(packet)) end
+            for _,c in ipairs(everyone) do if not packet.to or packet.to:gsub("-"," ")==c.name then c.receive(unpack(packet)) end end
         end
     end
 end

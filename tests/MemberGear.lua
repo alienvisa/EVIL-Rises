@@ -9,7 +9,7 @@ local craft={guild="7",db={},SyncService={}}
 function craft.SyncService:On(k,fn) handlers[k]=fn end
 function craft.SyncService:Publish(k,act,p,opts) sent[#sent+1]={k,act,p,opts} end
 local addon={Crafting=craft,GuildID=function() return craft.guild end,Owner=function(n) return n or "Self Lemon" end}
-C_Timer={After=function(_,fn) fn() end}
+C_Timer={After=function(_,fn) fn() end,NewTicker=noop}
 function GetServerTime() return now end
 function UnitRace() return "Night Elf","NightElf",4 end
 function UnitSex() return 3 end
@@ -23,6 +23,7 @@ function CreateFrame(kind)
     if kind=="PlayerModel" then model=f end
     return f
 end
+assert(loadfile("EVILRises/Repair.lua"))("EVILRises",addon)
 assert(loadfile("EVILRises/MemberGear.lua"))("EVILRises",addon)
 assert(loadfile("EVILRises/MemberFlyout.lua"))
 local p=addon.Profile

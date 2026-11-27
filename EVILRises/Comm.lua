@@ -17,6 +17,12 @@ local _, addon = ...
 -- A receiver reads the fields it knows and ignores the rest, so a field can be added without
 -- breaking older copies. An area registers once with Comm:Register and sends with Comm:Send.
 --
+-- A message for one member goes by whisper when that member has sent this format on the guild
+-- channel (every such copy reads whispers), and on the guild channel with `to` set otherwise.
+-- A whisper that bounces ("no player named ...", as across some realms) is sent again on the
+-- guild channel, and that member gets guild messages for LEGACY_FOR seconds. A whisper is read
+-- only from a member heard on the guild channel in this guild.
+--
 -- Copies from before this format (0.9.0 and older) listen only on the old prefixes. Every
 -- message also goes out in the old format for STARTUP_LEGACY seconds after login, long enough
 -- to hear any older copy online (they send a profession summary every 10 minutes), and for
@@ -39,11 +45,14 @@ local LEGACY = {
     crafts = { prefix = "EVRCrafts1", maxBytes = 96000 },
 }
 
-local Comm = { PROTOCOL = PROTOCOL, PREFIX = PREFIX, STARTUP_LEGACY = 900, LEGACY_FOR = 3600, CAPS_EVERY = 600 }
+local Comm = { PROTOCOL = PROTOCOL, PREFIX = PREFIX, STARTUP_LEGACY = 900, LEGACY_FOR = 3600, CAPS_EVERY = 600,
+    BOUNCE_WITHIN = 15 }
 addon.Comm = Comm
 
 local areas = {}   -- [area] = { label, priority, maxBytes, legacy, version, handle }
-local peers = {}   -- [member key] = { caps = { [area] = version }, at = time heard }
+local peers = {}   -- [member key] = { caps = { [area] = version }, at = time heard, guild = heard on its channel }
+local whispered = {} -- [member key] = { { area, action, payload, options, at } } sent by whisper lately
+local noWhisper = {} -- [member key] = time until which that member gets guild messages instead
 local legacyUntil, capsSentAt, capsDue
 
 local function owner(name) return addon.Owner and addon.Owner(name) end
@@ -80,6 +89,16 @@ function Comm:Supports(sender, area, atLeast)
     return type(n) == "number" and n >= (atLeast or 1)
 end
 
+-- The name to whisper `target` by, or nil when a message for it goes on the guild channel.
+function Comm:WhisperName(target)
+    local key = type(target) == "string" and owner(target)
+    local peer = key and peers[key]
+    if not (peer and peer.caps and peer.guild == guildID()) then return nil end
+    if (noWhisper[key] or 0) > GetServerTime() then return nil end
+    -- A member key is "Name Realm" or "Name"; a realm has no spaces in it.
+    return (key:gsub(" ", "-", 1))
+end
+
 -- Whether messages also go out in the old format (see the top of this file).
 function Comm:SendsLegacy()
     local now = GetServerTime()
@@ -96,6 +115,18 @@ function Comm:Send(area, action, payload, options)
     local target = options and options.target
     local now = GetServerTime()
     local message = { v = PROTOCOL, g = guild, d = area, a = action, p = payload, ver = version(), to = target }
+    local whisper = target and self:WhisperName(target)
+    if whisper then
+        local encoded = wire:EncodeForWoWAddonChannel(codec:Serialize(message))
+        comm:SendCommMessage(PREFIX, encoded, "WHISPER", whisper, spec.priority)
+        local key = owner(target)
+        local list = whispered[key] or {}
+        whispered[key] = list
+        while list[1] and now - list[1].at > self.BOUNCE_WITHIN do table.remove(list, 1) end
+        list[#list + 1] = { area = area, action = action, payload = payload, options = options, at = now }
+        return #encoded
+    end
+    -- Capabilities go on guild messages, where every guildmate hears them.
     if capsDue or not capsSentAt or now - capsSentAt >= self.CAPS_EVERY then
         message.c, capsSentAt, capsDue = self:Caps(), now, nil
     end
@@ -116,7 +147,25 @@ function Comm:Send(area, action, payload, options)
     return #encoded
 end
 
-local function hear(sender, caps)
+-- A whisper to `name` bounced: what went to it lately goes again on the guild channel.
+function Comm:Bounced(name)
+    local key = type(name) == "string" and owner(name)
+    local list = key and whispered[key]
+    if not list then return end
+    whispered[key] = nil
+    local now = GetServerTime()
+    noWhisper[key] = now + self.LEGACY_FOR
+    for _, m in ipairs(list) do
+        if now - m.at <= self.BOUNCE_WITHIN then
+            local spec = areas[m.area]
+            logSync("drop", spec and spec.label or "Sync", "%s %s  ·  whisper to %s bounced, sent on the guild channel",
+                m.area, m.action, key)
+            self:Send(m.area, m.action, m.payload, m.options)
+        end
+    end
+end
+
+local function hear(sender, caps, onGuild)
     local key = owner(sender)
     local peer = peers[key]
     if not peer then
@@ -126,6 +175,7 @@ local function hear(sender, caps)
         capsDue = true
     end
     peer.at = GetServerTime()
+    if onGuild then peer.guild = guildID() end
     if type(caps) == "table" then
         local clean = {}
         for area, n in pairs(caps) do
@@ -136,12 +186,12 @@ local function hear(sender, caps)
 end
 
 -- Checks shared by both formats, then the area's handler.
-local function dispatch(label, area, action, payload, sender, target, bytes, guild, theirs, caps)
+local function dispatch(label, area, action, payload, sender, target, bytes, guild, theirs, caps, channel)
     if guild ~= guildID() then
         logSync("drop", label, "from %s  ·  another guild", sender)
         return
     end
-    hear(sender, caps)
+    hear(sender, caps, channel == "GUILD")
     noteVersion(sender, theirs)
     local spec = areas[area]
     if not spec or type(action) ~= "string" then
@@ -152,7 +202,7 @@ local function dispatch(label, area, action, payload, sender, target, bytes, gui
         logSync("drop", spec.label, "from %s  ·  %d bytes  ·  too large", sender, bytes)
         return
     end
-    spec.handle(action, payload, sender, { target = target, bytes = bytes })
+    spec.handle(action, payload, sender, { target = target, bytes = bytes, channel = channel })
 end
 
 -- Own messages come back on the guild channel, and a sender must be a named player.
@@ -161,8 +211,8 @@ local function fromGuildmate(sender)
     return from and from ~= owner()
 end
 
-local function decode(label, message, channel, sender, limit)
-    if channel ~= "GUILD" or #message > limit then
+local function decode(label, message, channel, sender, limit, whispers)
+    if not (channel == "GUILD" or (whispers and channel == "WHISPER")) or #message > limit then
         logSync("drop", label, "from %s on %s  ·  %d bytes  ·  not the guild channel or too large",
             sender, channel, #message)
         return nil
@@ -177,7 +227,14 @@ end
 
 comm.RegisterComm(Comm, PREFIX, function(_, message, channel, sender)
     if not fromGuildmate(sender) then return end
-    local raw = decode("Sync", message, channel, sender, MAX_BYTES)
+    if channel == "WHISPER" then
+        local peer = peers[owner(sender)]
+        if not (peer and peer.guild and peer.guild == guildID()) then
+            logSync("drop", "Sync", "whisper from %s  ·  not heard in the guild", sender)
+            return
+        end
+    end
+    local raw = decode("Sync", message, channel, sender, MAX_BYTES, true)
     if not raw then return end
     local ok, m = codec:Deserialize(raw)
     if not ok or type(m) ~= "table" or type(m.v) ~= "number" or type(m.d) ~= "string" then
@@ -190,7 +247,10 @@ comm.RegisterComm(Comm, PREFIX, function(_, message, channel, sender)
         logSync("drop", label, "from %s  ·  newer message format (%d)", sender, math.floor(m.v))
         return
     end
-    dispatch(label, m.d, m.a, m.p, sender, m.to, #message, m.g, m.ver, m.c)
+    -- A whisper is for this member whatever it says.
+    local target = m.to
+    if channel == "WHISPER" then target = owner() end
+    dispatch(label, m.d, m.a, m.p, sender, target, #message, m.g, m.ver, m.c, channel)
 end)
 
 -- The old formats, from copies before this one. A message marked as a copy came from a newer
@@ -215,10 +275,25 @@ local function legacyHandler(kind)
         end
         if type(marker) == "number" and marker >= PROTOCOL then return end
         legacyUntil = math.max(legacyUntil or 0, GetServerTime() + Comm.LEGACY_FOR)
-        dispatch(label, area, action, payload, sender, target, #message, guild, theirs)
+        dispatch(label, area, action, payload, sender, target, #message, guild, theirs, nil, channel)
     end
 end
 
 for kind, legacy in pairs(LEGACY) do
     comm.RegisterComm(Comm, legacy.prefix, legacyHandler(kind))
 end
+
+-- "No player named '%s' is currently playing.": the whisper to that name bounced.
+local function bouncePattern()
+    local text = ERR_CHAT_PLAYER_NOT_FOUND_S
+    if type(text) ~= "string" then return nil end
+    local escaped = text:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1")
+    return "^" .. escaped:gsub("%%%%s", "(.+)") .. "$"
+end
+local events = CreateFrame("Frame")
+events:RegisterEvent("CHAT_MSG_SYSTEM")
+events:SetScript("OnEvent", function(_, _, text)
+    local pattern = bouncePattern()
+    local name = pattern and type(text) == "string" and text:match(pattern)
+    if name then Comm:Bounced(name) end
+end)
