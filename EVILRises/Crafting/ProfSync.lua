@@ -20,6 +20,7 @@ craft.ProfSync = ProfSync
 
 local Compat = craft.Compat
 local DOMAIN = "prof"
+local log = addon.Log or function() end
 ProfSync.SUMMARY_EVERY = 600   -- heartbeat summary
 ProfSync.CHANGE_DELAY = 10     -- one summary for a burst of changes
 ProfSync.AGGREGATE = 3         -- requests for a line gathered before answering
@@ -95,13 +96,18 @@ function ProfSync:OnEnvelope(env, sender)
     elseif env.act == "req" then
         self:OnRequest(sender, data.l)
     elseif env.act == "list" then
-        craft.Professions:ApplyList(key, data.l, data.h, data.r, data.x)
+        local stored = craft.Professions:ApplyList(key, data.l, data.h, data.r, data.x)
+        log("Professions", "%s %s's recipe list for line %s", stored and "Stored" or "Ignored (already held or not matching)",
+            key, data.l)
     end
 end
 
 function ProfSync:OnSummary(key, sender, p)
     local need = craft.Professions:ApplySummary(key, p)
-    if not need then return end
+    if not need then
+        log("Professions", "Ignored %s's summary: invalid", key)
+        return
+    end
     self.receivedDigests[key] = #need == 0 and digest(p) or nil
     if #need == 0 then return end
     local rec = craft.Professions:Get(key)
@@ -117,6 +123,7 @@ function ProfSync:OnSummary(key, sender, p)
         end
     end
     if #ask == 0 then return end
+    log("Professions", "%s's recipes changed on %d lines: asking for them", key, #ask)
     Compat.After(math.random(2, 6), function()
         -- A guild-wide answer to someone else may have brought the list meanwhile.
         local still, current = {}, craft.Professions:Get(key)

@@ -32,8 +32,8 @@ Guildmates running EVIL Rises sync automatically at login, every 60 seconds, and
 
 - `/evil` or `/evilrises` opens or closes the guild window. Your guild keybind and guild menu button work too.
 - `/evil version` shows the installed addon version.
+- `/evil debug` opens or closes the debug log. It lists the addon's last 500 events since login: sync messages sent and received, messages it ignored and why, and actions such as posting a bounty or accepting a craft order. Tick **Sync only** to see just the sync traffic, choose **Copy log** and press Ctrl+C to copy it into a bug report, or choose **Pause** to stop recording.
 - Drag the tabs to put your favorites first. Drag the bottom-right corner to resize the window, then click the padlock beside the close button to lock the size.
-- In **Settings**, adjust alerts and enabled features. For a bug report, choose **Open debug window**, reproduce the problem, then choose **Copy log**.
 
 ## Download and install
 

@@ -22,6 +22,7 @@ craft.CraftOrders = CraftOrders
 local L = craft.L
 local Compat = craft.Compat
 local DOMAIN = "craftorder"
+local log = addon.Log or function() end
 
 CraftOrders.OPEN_PER  = 5                  -- open orders one member may have
 CraftOrders.MAX_N     = 20                 -- items in one order
@@ -447,7 +448,11 @@ function CraftOrders:Place(item, opts)
         rg = self:ReagentsFlat(item, opts.to, opts.recipe), y = self:KnownYield(item, opts.recipe, opts.to), ts = t, at = t,
     }
     local o = self:Apply("new", data, me)
-    if not o then return nil, L["The order could not be placed."] end
+    if not o then
+        log("Orders", "Could not place an order for item %d", item)
+        return nil, L["The order could not be placed."]
+    end
+    log("Orders", "Placed order %s: %d x item %d", o.id, o.n, item)
     publish("new", data)
     self:Refresh()
     return o
@@ -455,6 +460,8 @@ end
 
 -- accept · decline · release · mats · done · cancel, on order `id`, by me.
 local ACTS = { accept = "acc", decline = "dec", release = "rel", mats = "mats", done = "done", cancel = "can" }
+local ACT_LOG = { accept = "Accepted", decline = "Declined", release = "Released", mats = "Marked materials sent for",
+    done = "Completed", cancel = "Cancelled" }
 function CraftOrders:Act(id, what)
     local act = ACTS[what] or what
     local data = { id = id, at = now() }
@@ -464,7 +471,11 @@ function CraftOrders:Act(id, what)
         local me = self:MyKey()
         data.rg, data.y = self:ReagentsFlat(o.item, me), self:KnownYield(o.item, nil, me)
     end
-    if not self:Apply(act, data, self:MyKey()) then return false end
+    if not self:Apply(act, data, self:MyKey()) then
+        log("Orders", "Could not %s order %s", what, tostring(id))
+        return false
+    end
+    log("Orders", "%s order %s", ACT_LOG[what] or tostring(what), tostring(id))
     publish(act, data)
     self:Refresh()
     return true
@@ -518,6 +529,7 @@ function CraftOrders:OnEnvelope(env, sender)
         local known = self:Get(type(data.id) == "string" and data.id or "")
         local before = known and known.cr
         local o = self:Apply(env.act, data, by)
+        log("Orders", "%s %s from %s on order %s", o and "Applied" or "Ignored", tostring(env.act), by, tostring(data.id))
         if o then
             if env.act == "acc" and before == self:MyKey() and o.cr ~= before then
                 craft:Print(string.format(L["%s accepted the order for %s at the same moment, and keeps it."],
@@ -580,6 +592,7 @@ function CraftOrders:Merge(list, by)
             end
         end
     end
+    log("Orders", "%s's running orders: %s", by, changed and "updated this client" or "nothing new")
     if changed then
         self:Prune()
         self:Refresh()
@@ -746,6 +759,7 @@ function CraftOrders:OnTradeDone(partner, mine, theirs, tipPut, pick)
     for _, x in ipairs(list) do
         if x.role == "author" and tipPut and x.o.id == tipFor then x.o.paid = true end
     end
+    log("Orders", "Trade with %s finished: %s", partner, chosen and act and (act .. " on order " .. chosen.o.id) or "no order moved")
     if chosen and act then self:Act(chosen.o.id, act) end
     self:Refresh()
 end
@@ -803,7 +817,11 @@ function CraftOrders:OnMailSent()
     if not p then return end
     local subj = sent and sent.subject or ""
     local sameSubject = subj ~= "" and (p.subject:sub(1, #subj) == subj or subj:sub(1, #p.subject) == p.subject)
-    if not sent or sent.to:lower() ~= p.to:lower() or not sameSubject then return end
+    if not sent or sent.to:lower() ~= p.to:lower() or not sameSubject then
+        log("Orders", "Mail sent, but not the one prepared for order %s", p.id)
+        return
+    end
+    log("Orders", "Mail for order %s sent to %s", p.id, p.to)
     self.mailPending = nil
     local o = self:Get(p.id)
     if not o then return end
